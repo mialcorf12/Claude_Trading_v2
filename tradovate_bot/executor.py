@@ -224,7 +224,13 @@ def main():
         print(
             "tradovate_bot executor misconfigured: NT8_INCOMING_DIR, NT8_ACCOUNT_ID, and "
             "ACCOUNT_TELEMETRY_JSON_PATH must all be set. Refusing to start rather than run "
-            "against an unconfigured/ambiguous transport.",
+            "against an unconfigured/ambiguous transport.\n"
+            "If you just set these with [Environment]::SetEnvironmentVariable(...,\"Machine\"), "
+            "this terminal (and NT8, if already running) started before that write and is still "
+            "holding its old, empty environment -- Windows does not refresh an already-running "
+            "process's variables. Close this terminal and NT8 entirely, open a brand-new terminal "
+            "and relaunch NT8, then retry. If it still doesn't pick them up, log off and back into "
+            "this RDP session once.",
             file=sys.stderr,
         )
         sys.exit(1)
