@@ -1,3 +1,12 @@
+> **SUPERSEDED (2026-11-09).** Este runbook completo describe el camino de
+> API directa de Tradovate, confirmado como un dead end para cuentas
+> prop/evaluation como Lucid (no pueden registrar API Access). Tampoco
+> aplica ya el entorno Mac: el deployment ahora es un VPS Windows. No sigas
+> estos pasos contra la cuenta real. El camino vigente es NinjaTrader 8 ATI
+> (OIF) + AddOn de telemetría -- ver `tradovate_bot/README.md` y
+> `odd/tasks/tradovate-execution-bot.md`. Este archivo queda como
+> referencia histórica únicamente.
+
 # Runbook: probar tradovate_bot contra la cuenta DEMO de Tradovate (macOS)
 
 Pasos y comandos exactos. Corré cada bloque en Terminal, desde la raíz del

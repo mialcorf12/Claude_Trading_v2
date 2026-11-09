@@ -76,17 +76,17 @@ separate signal (Claude) from execution (deterministic bot).
 - [ ] ~~Tradovate client authenticates against demo env...~~ SUPERSEDED — direct API confirmed impossible for prop accounts. `client.py` as written will not be used against the real account.
 - [ ] ~~WebSocket listener reconnects...~~ SUPERSEDED — no WebSocket in the ATI/OIF path; replaced by tailing NT8's `outgoing` folder for confirmation files.
 - [x] README documents env vars required and how to switch demo → live. Still accurate for the parts that remain (no hardcoded creds), but the demo/live Tradovate env var is moot under ATI — README needs a rewrite pass when the OIF module lands.
-- [ ] NEW: OIF writer module places/cancels/closes a position via NT8 ATI and the resulting order/position confirmation files are correctly parsed. Not started.
-- [ ] NEW: Read-only NinjaScript AddOn exports account realized P&L (today + total) and EOD cash balance to a JSON file NT8-side, and `executor`/`risk_guard` can read it. Not started.
+- [x] NEW: OIF writer module places/cancels/closes a position via NT8 ATI and the resulting order/position confirmation files are correctly parsed. Evidence: `python -m pytest tests/tradovate_bot/test_oif_writer.py tests/tradovate_bot/test_executor.py -v` → 24 passed. Caveat: `tail_outgoing`'s "parsing" is an intentionally honest generic semicolon-split (filename-convention account/instrument/kind only) — the outgoing files' internal field semantics are still unconfirmed against a real NT8 instance; these confirmations feed fill-logging only, never risk_guard.
+- [x] NEW: Read-only NinjaScript AddOn exports account realized P&L (today + total) and EOD cash balance to a JSON file NT8-side, and `executor`/`risk_guard` can read it. `ninjatrader_addon/AccountTelemetryAddOn.cs` + `tradovate_bot/account_state.py` (10/10 tests passing, see below). Caveat: the AddOn itself is **not independently verified against a live/demo NT8 instance** — no NT8 runtime was available to compile/run it this session. Must be sanity-checked on the VPS (including a real day-rollover) before being trusted for the funded account.
 - [ ] NEW: Whole stack (NT8 + AddOn + Python executor) runs unattended on the Windows VPS (TradingVPS Basic) without manual restarts. Not started — blocked on the remote-access open question above.
 
 ## Tasks
 1. [x] Tradovate REST/WS client — `tradovate_bot/client.py`. Built, tested against mocks, but SUPERSEDED (dead end for prop accounts). Kept in repo as reference/for a possible future live non-prop Tradovate account; not deleted.
 2. [x] risk_guard module + unit tests (test-first). `tradovate_bot/risk_guard.py` + `tests/tradovate_bot/test_risk_guard.py`, tests written before implementation, 24/24 passing. Still the current, correct decision engine.
-3. [~] executor main loop. `tradovate_bot/executor.py` built against the old `client.py` contract; needs rewiring to the new OIF writer + AddOn JSON reader once those exist. Not yet redone.
-4. [x] Process/runbook docs — `tradovate_bot/README.md`, `tradovate_bot/RUNBOOK_DEMO.md`. Both describe the superseded direct-API path; need a rewrite pass for ATI/OIF + VPS deployment once that's built.
-5. [ ] NEW: OIF writer module (replaces client.py's order-placement role).
-6. [ ] NEW: NinjaScript AddOn for read-only account telemetry.
+3. [x] executor main loop. `tradovate_bot/executor.py` rewired to the OIF writer + AddOn JSON reader (`oif_writer`/`account_state` modules); no longer imports `client.py`/websockets at all. `tests/tradovate_bot/test_executor.py` rewritten to match (14/14 passing).
+4. [x] Process/runbook docs — `tradovate_bot/README.md` rewritten for the ATI/OIF path (env vars, OIF grammar, AddOn JSON contract, unverified-items list). `tradovate_bot/RUNBOOK_DEMO.md` given a superseded banner pointing at the README instead of a full rewrite (it's entirely about the dead direct-API/Mac path).
+5. [x] NEW: OIF writer module (replaces client.py's order-placement role). `tradovate_bot/oif_writer.py` + `tests/tradovate_bot/test_oif_writer.py`, 10/10 passing.
+6. [x] NEW: NinjaScript AddOn for read-only account telemetry. `ninjatrader_addon/AccountTelemetryAddOn.cs` — unverified against live NT8 (see acceptance criteria caveat above).
 7. [ ] NEW: VPS deployment runbook (git clone/pull on Windows VPS, Python install, NT8 ATI settings to enable, AddOn install into NT8, how to run executor unattended on Windows — NSSM or Task Scheduler, not systemd).
 8. [ ] NEW: Resolve remote-access method (SSH vs. manual-RDP-with-pasted-output) so implementation/verification on the VPS can actually happen.
 
@@ -105,13 +105,35 @@ separate signal (Claude) from execution (deterministic bot).
   Claude to already be set up on the VPS before continuing to code —
   blocked on remote-access method (see Open Questions). This status
   update written so it travels with the git migration.
+- 2026-11-09: User confirmed the VPS is already provisioned (Basic tier)
+  and asked to continue coding the parts that don't require touching the
+  VPS. Landed on branch `feature/tradovate-oif-execution` (local only, not
+  pushed): `tradovate_bot/oif_writer.py` (OIF PLACE/CANCEL/CLOSEPOSITION
+  command builder + atomic incoming-folder writer + generic outgoing-folder
+  tailer), `tradovate_bot/account_state.py` (fail-closed AddOn telemetry
+  reader), `executor.py` rewired to drop `client.py`/websockets entirely
+  and use the two new modules, `ninjatrader_addon/AccountTelemetryAddOn.cs`
+  (read-only telemetry AddOn), and a README/RUNBOOK docs pass. Full suite:
+  `python -m pytest tests/tradovate_bot/ -v` → 69 passed: 24 risk_guard
+  (unchanged) + 11 historical client.py (still green but irrelevant to the
+  live path) + 10 new oif_writer + 10 new account_state + 14 rewired
+  executor. Explicitly NOT done this session: tasks 7
+  (VPS unattended run) and 8 (remote-access method) — both require
+  actually touching the VPS, which stayed out of scope per the user's
+  instruction. The NinjaScript AddOn is also explicitly unverified against
+  a live/demo NT8 instance (no NT8 runtime available here) — flagged in
+  both the acceptance criteria and the README's "What is NOT verified yet"
+  section.
 
 Still true regardless of transport: `risk_guard.py` is pure, deterministic,
 fail-closed, test-first, and already covers every Lucid risk-rule case —
-**45 tests passed** as of the last actual run
-(`python3 -m pytest tests/tradovate_bot/ -v`). That work is not invalidated
-by any of the pivots above.
+24/24 of its own tests passing, unaffected by any pivot. The OIF writer and
+AddOn telemetry reader are now implemented and unit-tested (fail-closed
+contracts verified), and `executor.py` no longer depends on `client.py` or
+any network/websocket library at all.
 
-Not yet done: the OIF writer, the NinjaScript AddOn, rewiring `executor.py`
-to use them instead of the old `client.py`, and anything that requires
-actually touching the VPS.
+Not yet done: tasks 7 and 8 — running the whole stack unattended on the
+VPS, and resolving how Claude actually touches that VPS. Also not yet
+done: verifying the NinjaScript AddOn's actual runtime behavior (day-
+rollover correctness in particular) against a real NT8 instance, and
+verifying NT8 ATI's real outgoing-file field layout.
