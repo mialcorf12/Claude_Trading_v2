@@ -8,10 +8,12 @@ Pivot History below). Current plan: **NinjaTrader 8 ATI (Order Instruction
 Files) + a read-only NinjaScript AddOn for account telemetry**, running on
 a Windows VPS (TradingVPS, Basic tier: 2 cores / 8GB RAM / $35mo) where NT8
 is already installed and connected to the Lucid Tradovate account. User
-connects to that VPS via Microsoft Remote Desktop ("Windows App" on Mac);
-Claude has no remote-execution tool into it yet (no SSH confirmed/enabled)
-— deployment there is still an open logistics question, see Open
-Questions. User is migrating this project to the VPS via `git`.
+connects to that VPS via Microsoft Remote Desktop ("Windows App" on Mac).
+Claude has no remote-execution tool into it and, per the user's 2026-11-09
+decision (see Open Questions), none will be set up — deployment/operation
+on the VPS is a closed decision: the user runs every step manually via RDP,
+following `tradovate_bot/RUNBOOK_VPS.md`. User is migrating this project to
+the VPS via `git`.
 
 `risk_guard.py` and the executor's decision logic are unaffected by any of
 this churn — they're pure/deterministic and already tested green. What
@@ -67,8 +69,8 @@ separate signal (Claude) from execution (deterministic bot).
 - The NinjaScript AddOn must stay strictly read-only telemetry — no order logic, no decision-making in C#.
 - Deployment target is the Windows VPS (TradingVPS Basic), not Mac. Mac is dev/test only for the pure-Python pieces (`risk_guard.py`).
 
-## Open questions (blocking next implementation step)
-- How will Claude actually touch the VPS to help set this up? User wants to migrate via `git` from Mac to VPS, and asked Claude to "already be on the VPS" — but there is no remote-execution tool available in this session (no SSH client configured, RDP is a human-only GUI). Needs: either (a) OpenSSH Server enabled on the Windows VPS with host/port/credentials given explicitly, or (b) Claude prepares code + exact commands here, user runs them on the VPS via RDP and pastes results back. Not yet decided.
+## Open questions
+- RESOLVED (2026-11-09): How will Claude actually touch the VPS to help set this up? User decided: no SSH/remote-execution tool will be set up (option (a), OpenSSH, is explicitly rejected). Claude prepares code and the exact runbook (`tradovate_bot/RUNBOOK_VPS.md`); the user runs every step on the VPS via RDP and reports results back here. This is permanent, not a temporary workaround.
 
 ## Acceptance criteria
 - [x] Unit tests for risk_guard cover: under all limits (pass), daily loss breached, EOD max-loss breached, consistency rule breached, position size over 3 MNQ, ambiguous/missing data (fail closed). Evidence: `python3 -m pytest tests/tradovate_bot/test_risk_guard.py -v` → 24 passed. Still valid — unaffected by the transport pivot.
@@ -78,7 +80,8 @@ separate signal (Claude) from execution (deterministic bot).
 - [x] README documents env vars required and how to switch demo → live. Still accurate for the parts that remain (no hardcoded creds), but the demo/live Tradovate env var is moot under ATI — README needs a rewrite pass when the OIF module lands.
 - [x] NEW: OIF writer module places/cancels/closes a position via NT8 ATI and the resulting order/position confirmation files are correctly parsed. Evidence: `python -m pytest tests/tradovate_bot/test_oif_writer.py tests/tradovate_bot/test_executor.py -v` → 24 passed. Caveat: `tail_outgoing`'s "parsing" is an intentionally honest generic semicolon-split (filename-convention account/instrument/kind only) — the outgoing files' internal field semantics are still unconfirmed against a real NT8 instance; these confirmations feed fill-logging only, never risk_guard.
 - [x] NEW: Read-only NinjaScript AddOn exports account realized P&L (today + total) and EOD cash balance to a JSON file NT8-side, and `executor`/`risk_guard` can read it. `ninjatrader_addon/AccountTelemetryAddOn.cs` + `tradovate_bot/account_state.py` (10/10 tests passing, see below). Caveat: the AddOn itself is **not independently verified against a live/demo NT8 instance** — no NT8 runtime was available to compile/run it this session. Must be sanity-checked on the VPS (including a real day-rollover) before being trusted for the funded account.
-- [ ] NEW: Whole stack (NT8 + AddOn + Python executor) runs unattended on the Windows VPS (TradingVPS Basic) without manual restarts. Not started — blocked on the remote-access open question above.
+- [x] NEW: VPS deployment runbook exists covering git clone/pull, Python install, NT8 ATI settings, AddOn install, env var config, and unattended run via NSSM/Task Scheduler. Evidence: `tradovate_bot/RUNBOOK_VPS.md`. Caveat: written without VPS/NT8 runtime access (per the closed remote-access decision) — exact NT8 ATI menu wording and the AddOn's day-rollover behavior still need the user to verify on the real machine; the runbook says so explicitly.
+- [ ] NEW: Whole stack (NT8 + AddOn + Python executor) actually running unattended on the Windows VPS without manual restarts. Not started — the runbook above exists, but no one has executed it on the real VPS yet.
 
 ## Tasks
 1. [x] Tradovate REST/WS client — `tradovate_bot/client.py`. Built, tested against mocks, but SUPERSEDED (dead end for prop accounts). Kept in repo as reference/for a possible future live non-prop Tradovate account; not deleted.
@@ -87,8 +90,7 @@ separate signal (Claude) from execution (deterministic bot).
 4. [x] Process/runbook docs — `tradovate_bot/README.md` rewritten for the ATI/OIF path (env vars, OIF grammar, AddOn JSON contract, unverified-items list). `tradovate_bot/RUNBOOK_DEMO.md` given a superseded banner pointing at the README instead of a full rewrite (it's entirely about the dead direct-API/Mac path).
 5. [x] NEW: OIF writer module (replaces client.py's order-placement role). `tradovate_bot/oif_writer.py` + `tests/tradovate_bot/test_oif_writer.py`, 10/10 passing.
 6. [x] NEW: NinjaScript AddOn for read-only account telemetry. `ninjatrader_addon/AccountTelemetryAddOn.cs` — unverified against live NT8 (see acceptance criteria caveat above).
-7. [ ] NEW: VPS deployment runbook (git clone/pull on Windows VPS, Python install, NT8 ATI settings to enable, AddOn install into NT8, how to run executor unattended on Windows — NSSM or Task Scheduler, not systemd).
-8. [ ] NEW: Resolve remote-access method (SSH vs. manual-RDP-with-pasted-output) so implementation/verification on the VPS can actually happen.
+7. [x] NEW: VPS deployment runbook (git clone/pull on Windows VPS, Python install, NT8 ATI settings to enable, AddOn install into NT8, how to run executor unattended on Windows — NSSM or Task Scheduler, not systemd). `tradovate_bot/RUNBOOK_VPS.md`. Written for the user to execute manually via RDP; not run against the real VPS yet.
 
 ## Progress
 - 2026-11-09: Created. First implementation pass (direct Tradovate REST/WS
@@ -124,6 +126,15 @@ separate signal (Claude) from execution (deterministic bot).
   a live/demo NT8 instance (no NT8 runtime available here) — flagged in
   both the acceptance criteria and the README's "What is NOT verified yet"
   section.
+- 2026-11-09: User decided task 8 is unnecessary and removed it — no
+  SSH/remote-execution tool will ever be set up for this VPS; the user runs
+  every deployment/operational step manually via RDP. Resolved the Open
+  Questions entry accordingly. Executed task 7: wrote
+  `tradovate_bot/RUNBOOK_VPS.md` (git clone/pull, Python install, NT8 ATI
+  enablement, AddOn install, env var config, NSSM unattended run). This is
+  documentation only — nobody has run it against the real VPS yet, so the
+  final "whole stack runs unattended" acceptance criterion stays open until
+  the user executes it and reports back.
 
 Still true regardless of transport: `risk_guard.py` is pure, deterministic,
 fail-closed, test-first, and already covers every Lucid risk-rule case —
@@ -132,8 +143,9 @@ AddOn telemetry reader are now implemented and unit-tested (fail-closed
 contracts verified), and `executor.py` no longer depends on `client.py` or
 any network/websocket library at all.
 
-Not yet done: tasks 7 and 8 — running the whole stack unattended on the
-VPS, and resolving how Claude actually touches that VPS. Also not yet
-done: verifying the NinjaScript AddOn's actual runtime behavior (day-
-rollover correctness in particular) against a real NT8 instance, and
-verifying NT8 ATI's real outgoing-file field layout.
+Not yet done: actually running the whole stack unattended on the real VPS
+(task 7's runbook exists but is unexecuted). Task 8 is resolved/removed —
+no remote-execution tool will be set up; the user operates the VPS
+manually via RDP. Also not yet done: verifying the NinjaScript AddOn's
+actual runtime behavior (day-rollover correctness in particular) against a
+real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
