@@ -1,12 +1,20 @@
 """Main loop: reads an approved order, checks it against risk_guard using
-live account state from the Tradovate client, places it only if every check
-passes, and logs every decision and fill to local JSON state files.
+account state from the NinjaScript AddOn's telemetry file, places it only
+if every check passes via NT8's ATI (OIF) transport, and logs every
+decision and fill to local JSON state files.
 
 Input contract: an approved order record with the same shape trader-broker
 (day-trader-skill) writes to trader/orders.json -- a dict (or {"orders": [...]})
 with at least symbol, side, qty, order type, and optionally stop/target
 prices. This bot does not decide entries/exits; it only gates and sends
 what it is handed.
+
+Transport: NinjaTrader 8's Automated Trading Interface (ATI) -- see
+oif_writer.py for the Order Instruction File grammar and the outgoing-folder
+tailer. Account state (balance / realized P&L for the Lucid kill switches)
+comes from a separate, purpose-built channel: account_state.py reads a JSON
+file exported by the read-only NinjaScript AddOn
+(ninjatrader_addon/AccountTelemetryAddOn.cs).
 
 No LLM call exists anywhere in this module or anything it calls.
 """
@@ -16,14 +24,30 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from tradovate_bot import risk_guard
-from tradovate_bot.client import TradovateClient, TradovateCredentials
+from tradovate_bot import account_state, oif_writer, risk_guard
 
 STATE_DIR = os.path.join(os.path.dirname(__file__), "state")
 DECISIONS_LOG = os.path.join(STATE_DIR, "decisions.log.jsonl")
 FILLS_LOG = os.path.join(STATE_DIR, "fills.jsonl")
 DEFAULT_ORDERS_PATH = os.environ.get("TRADOVATE_ORDERS_PATH", "trader/orders.json")
 POLL_INTERVAL_SECONDS = float(os.environ.get("TRADOVATE_POLL_INTERVAL_SECONDS", "5"))
+
+# NT8 ATI transport configuration. NT8_INCOMING_DIR/NT8_OUTGOING_DIR are the
+# ATI "incoming"/"outgoing" folders NT8 is configured to watch (typically
+# under My Documents\<NT Folder>\incoming and \outgoing). NT8_ACCOUNT_ID is
+# the NT8 account *name* string (e.g. "Sim101" or the live Tradovate-backed
+# account name as NT8 displays it) -- not a Tradovate numeric account id,
+# since ATI never talks to Tradovate's API directly.
+NT8_INCOMING_DIR = os.environ.get("NT8_INCOMING_DIR", "")
+NT8_OUTGOING_DIR = os.environ.get("NT8_OUTGOING_DIR", "")
+NT8_ACCOUNT_ID = os.environ.get("NT8_ACCOUNT_ID", "")
+
+# Path to the JSON telemetry file written by the read-only NinjaScript
+# AddOn. See account_state.py for the required field contract.
+ACCOUNT_TELEMETRY_JSON_PATH = os.environ.get("ACCOUNT_TELEMETRY_JSON_PATH", "")
+ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS = float(
+    os.environ.get("ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS", "30")
+)
 
 
 def _utc_now_iso():
@@ -78,7 +102,7 @@ def load_orders(path):
 
 def normalize_order(raw_order):
     """Maps a trader-broker-shaped order record onto the fields risk_guard
-    and the Tradovate client need: symbol, side, qty, type, plus optional
+    and the OIF writer need: symbol, side, qty, type, plus optional
     stop/target prices. Returns None if the record can't be normalized --
     callers must treat that as a reject, never a pass."""
     if not isinstance(raw_order, dict):
@@ -105,114 +129,119 @@ def normalize_order(raw_order):
     return normalized
 
 
-def fetch_account_state(client):
-    """Pulls current account state from Tradovate and maps it onto the
-    fields risk_guard requires. On any missing/unexpected field, returns a
-    state dict with that field simply absent -- risk_guard itself fails
-    closed on missing fields, so no guessing happens here either."""
-    state = {}
-    try:
-        account = client.get_account() or {}
-        cash = client.get_cash_balance() or {}
-    except Exception:
-        # Any network/auth failure means we cannot trust account state:
-        # return an empty dict so risk_guard's fail-closed check rejects.
+def fetch_account_state():
+    """Reads current account state from the NinjaScript AddOn's telemetry
+    file. Returns {} (triggering risk_guard's own fail-closed check) on any
+    missing file, stale data, or malformed payload -- account_state.py
+    itself never raises for those cases."""
+    if not ACCOUNT_TELEMETRY_JSON_PATH:
         return {}
-    def first_present(*keys):
-        for key in keys:
-            if cash.get(key) is not None:
-                return cash.get(key)
-        return None
-
-    state["current_balance"] = first_present("netLiquidationValue", "cashBalance")
-    state["eod_balance_last_close"] = first_present("endOfDayNetLiquidation", "priorDayBalance")
-    state["daily_realized_pnl"] = first_present("realizedPnl", "totalPnL")
-    state["daily_profit_today"] = cash.get("todayRealizedProfit")
-    state["total_realized_profit"] = cash.get("totalRealizedProfit")
-    return state
+    return account_state.read_account_state(
+        ACCOUNT_TELEMETRY_JSON_PATH,
+        max_staleness_seconds=ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS,
+    )
 
 
-def build_tradovate_order(order):
-    """Maps our normalized order onto Tradovate's placeorder payload shape."""
-    side_map = {"buy": "Buy", "sell": "Sell"}
-    type_map = {"market": "Market", "limit": "Limit", "stop": "Stop"}
-    payload = {
-        "symbol": order["symbol"],
-        "action": side_map.get(order["side"], "Buy"),
-        "orderQty": int(order["qty"]),
-        "orderType": type_map.get(str(order.get("type", "market")).lower(), "Market"),
-    }
-    if order.get("limit_price") is not None:
-        payload["price"] = order["limit_price"]
-    if order.get("stop_price") is not None or order.get("stop_loss_stop_price") is not None:
-        payload["stopPrice"] = order.get("stop_price", order.get("stop_loss_stop_price"))
-    return payload
+# NT8 ATI action strings for futures are BUY/SELL (per NT8 ATI usage
+# examples in the task doc's confirmed grammar); this mapping is the one
+# place that assumption lives, isolated from oif_writer's pure grammar
+# functions.
+_SIDE_TO_ATI_ACTION = {"buy": "BUY", "sell": "SELL"}
+_TYPE_TO_ATI_ORDER_TYPE = {"market": "MARKET", "limit": "LIMIT", "stop": "STOP"}
 
 
-def process_order(client, raw_order):
-    """Normalizes, risk-checks, and -- only on a pass -- places one order.
-    Always logs the decision, pass or reject, with its reason."""
+def build_place_command(order, account=None):
+    """Maps our normalized order onto an OIF PLACE command string. account
+    defaults to the module-level NT8_ACCOUNT_ID, read at call time (not at
+    import time) so tests/callers can reconfigure it after import."""
+    if account is None:
+        account = NT8_ACCOUNT_ID
+    action = _SIDE_TO_ATI_ACTION.get(order["side"], "BUY")
+    order_type = _TYPE_TO_ATI_ORDER_TYPE.get(str(order.get("type", "market")).lower(), "MARKET")
+    stop_price = order.get("stop_price", order.get("stop_loss_stop_price"))
+    return oif_writer.build_place_command(
+        account=account,
+        instrument=order["symbol"],
+        action=action,
+        qty=int(order["qty"]),
+        order_type=order_type,
+        limit_price=order.get("limit_price"),
+        stop_price=stop_price,
+    )
+
+
+def process_order(raw_order):
+    """Normalizes, risk-checks, and -- only on a pass -- places one order
+    via the NT8 ATI OIF writer. Always logs the decision, pass or reject,
+    with its reason."""
     order = normalize_order(raw_order)
     if order is None:
         decision = risk_guard.Decision(False, "order record could not be normalized (missing/malformed fields)")
         log_decision(raw_order, decision)
         return decision
 
-    account_state = fetch_account_state(client)
-    decision = risk_guard.evaluate_order(order, account_state)
-    log_decision(order, decision, extra={"account_state": account_state})
+    account_state_dict = fetch_account_state()
+    decision = risk_guard.evaluate_order(order, account_state_dict)
+    log_decision(order, decision, extra={"account_state": account_state_dict})
 
     if not decision.allow:
         return decision
 
+    command = build_place_command(order)
     try:
-        result = client.place_order(build_tradovate_order(order))
-    except Exception as exc:  # noqa: BLE001 - must be logged, never swallowed silently
+        path = oif_writer.write_command(NT8_INCOMING_DIR, command)
+    except OSError as exc:
         log_decision(order, risk_guard.Decision(False, "order placement failed: %s" % exc))
         raise
-    log_fill({"order": order, "placement_result": result, "status": "sent"})
+    log_fill({"order": order, "command": command, "oif_path": path, "status": "sent"})
     return decision
 
 
-def run_once(client, orders_path=DEFAULT_ORDERS_PATH):
+def run_once(orders_path=DEFAULT_ORDERS_PATH):
     """Processes every order currently in the orders file. Returns the list
     of decisions made, in order."""
     decisions = []
     for raw_order in load_orders(orders_path):
-        decisions.append(process_order(client, raw_order))
+        decisions.append(process_order(raw_order))
     return decisions
 
 
-def on_ws_message(message):
-    """WebSocket callback: logs fills and account-update frames as they
-    arrive. Tradovate sends fill events inside an "fills" or "orderVersion"
-    collection in its sync frames."""
-    if not isinstance(message, dict):
-        return
-    for key in ("fills", "fill"):
-        if key in message:
-            payload = message[key]
-            items = payload if isinstance(payload, list) else [payload]
-            for item in items:
-                log_fill({"source": "websocket", "event": item})
+def poll_outgoing_once(seen_files):
+    """Tails NT8's outgoing folder once for new order/position/connection
+    confirmation files, logging each as a fill-log record for later review.
+    These files are logging-only -- see oif_writer.py's module docstring on
+    why their internal fields are not trusted for risk decisions. Returns
+    the updated seen_files set."""
+    records, updated_seen = oif_writer.tail_outgoing(NT8_OUTGOING_DIR, seen_files)
+    for record in records:
+        log_fill({"source": "nt8_outgoing", "record": record})
+    return updated_seen
 
 
 def main():
     _ensure_state_dir()
-    credentials = TradovateCredentials()
-    client = TradovateClient(credentials)
-    client.authenticate()
-    client.start_listener(on_message=on_ws_message)
-    print("tradovate_bot executor running against %s environment, account %s" % (
-        "LIVE" if credentials.live else "demo", credentials.account_id), file=sys.stderr)
+    if not NT8_INCOMING_DIR or not NT8_ACCOUNT_ID or not ACCOUNT_TELEMETRY_JSON_PATH:
+        print(
+            "tradovate_bot executor misconfigured: NT8_INCOMING_DIR, NT8_ACCOUNT_ID, and "
+            "ACCOUNT_TELEMETRY_JSON_PATH must all be set. Refusing to start rather than run "
+            "against an unconfigured/ambiguous transport.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(
+        "tradovate_bot executor running: account=%s incoming=%s outgoing=%s telemetry=%s"
+        % (NT8_ACCOUNT_ID, NT8_INCOMING_DIR, NT8_OUTGOING_DIR or "(not configured)", ACCOUNT_TELEMETRY_JSON_PATH),
+        file=sys.stderr,
+    )
+    seen_outgoing_files = set()
     try:
         while True:
-            run_once(client)
+            run_once()
+            if NT8_OUTGOING_DIR:
+                seen_outgoing_files = poll_outgoing_once(seen_outgoing_files)
             time.sleep(POLL_INTERVAL_SECONDS)
     except KeyboardInterrupt:
         pass
-    finally:
-        client.stop_listener()
 
 
 if __name__ == "__main__":
