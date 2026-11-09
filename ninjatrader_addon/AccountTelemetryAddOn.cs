@@ -1,6 +1,5 @@
 #region Using declarations
 using System;
-using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -27,32 +26,45 @@ using NinjaTrader.NinjaScript;
 // / Cash Value display for at least one full session including a day
 // rollover, per tradovate_bot/README.md.
 // ---------------------------------------------------------------------------
+//
+// Configuration note (2026-11-09): this AddOn has no window, and NinjaTrader
+// does not expose any UI to edit [NinjaScriptProperty] values on a windowless
+// AddOn -- NinjaTrader support has confirmed those only become settable
+// inside an AddOn's own custom window, which this deliberately doesn't have
+// (see https://ninjatrader.com/support/forum/forum/ninjatrader-8/add-on-development/1162313-where-are-addon-settings-exposed).
+// Configuration therefore comes from the same environment variables the
+// Python executor already uses (see tradovate_bot/README.md): NT8_ACCOUNT_ID,
+// ACCOUNT_TELEMETRY_JSON_PATH, and ACCOUNT_TELEMETRY_EXPORT_INTERVAL_SECONDS.
+// A headless AddOn does not need a menu entry to run -- NinjaTrader
+// instantiates and drives it through OnStateChange automatically at startup
+// and on every NinjaScript compile (confirmed: an AddOn "does not require
+// its own window to function", https://docs.ninjatrader.com/ninjascript/addon_development_overview).
+// Check NT8's NinjaScript Output window (Control Center -> New -> NinjaScript
+// Output) for this AddOn's startup/export log lines -- that is the real
+// "is it running" signal, not any menu.
+// ---------------------------------------------------------------------------
 
 namespace NinjaTrader.NinjaScript.AddOns
 {
     public class AccountTelemetryAddOn : NinjaTrader.NinjaScript.AddOnBase
     {
+        private const string DefaultAccountName = "Sim101";
+        private static readonly string DefaultOutputJsonPath =
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                "NinjaTrader 8", "AccountTelemetry", "account_telemetry.json");
+        private const int DefaultExportIntervalSeconds = 5;
+
         private Account monitoredAccount;
         private System.Timers.Timer exportTimer;
         private readonly object stateLock = new object();
 
+        private string accountName;
+        private string outputJsonPath;
+        private int exportIntervalSeconds;
+
         private double realizedPnlAtDayStart;
         private double cashValueAtDayStart;
         private DateTime currentTradingDay = DateTime.MinValue;
-
-        [NinjaScriptProperty]
-        [Display(Name = "Account Name", Order = 1, GroupName = "Parameters")]
-        public string AccountName { get; set; } = "Sim101";
-
-        [NinjaScriptProperty]
-        [Display(Name = "Output JSON Path", Order = 2, GroupName = "Parameters")]
-        public string OutputJsonPath { get; set; } =
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                "NinjaTrader 8", "AccountTelemetry", "account_telemetry.json");
-
-        [NinjaScriptProperty]
-        [Display(Name = "Export Interval (seconds)", Order = 3, GroupName = "Parameters")]
-        public int ExportIntervalSeconds { get; set; } = 5;
 
         protected override void OnStateChange()
         {
@@ -62,6 +74,7 @@ namespace NinjaTrader.NinjaScript.AddOns
             }
             else if (State == State.Active)
             {
+                LoadConfigFromEnvironment();
                 StartExporting();
             }
             else if (State == State.Terminated)
@@ -70,26 +83,50 @@ namespace NinjaTrader.NinjaScript.AddOns
             }
         }
 
+        private void LoadConfigFromEnvironment()
+        {
+            accountName = FirstNonEmpty(Environment.GetEnvironmentVariable("NT8_ACCOUNT_ID"), DefaultAccountName);
+            outputJsonPath = FirstNonEmpty(Environment.GetEnvironmentVariable("ACCOUNT_TELEMETRY_JSON_PATH"), DefaultOutputJsonPath);
+
+            int parsedInterval;
+            string rawInterval = Environment.GetEnvironmentVariable("ACCOUNT_TELEMETRY_EXPORT_INTERVAL_SECONDS");
+            exportIntervalSeconds = !string.IsNullOrWhiteSpace(rawInterval) && int.TryParse(rawInterval, out parsedInterval)
+                ? parsedInterval
+                : DefaultExportIntervalSeconds;
+        }
+
+        private static string FirstNonEmpty(string value, string fallback)
+        {
+            return string.IsNullOrWhiteSpace(value) ? fallback : value;
+        }
+
         private void StartExporting()
         {
-            monitoredAccount = Account.All.FirstOrDefault(a => a.Name == AccountName);
+            monitoredAccount = Account.All.FirstOrDefault(
+                a => string.Equals(a.Name, accountName, StringComparison.OrdinalIgnoreCase));
             if (monitoredAccount == null)
             {
                 NinjaTrader.Code.Output.Process(
-                    string.Format("AccountTelemetryAddOn: account '{0}' not found, telemetry export disabled.", AccountName),
+                    string.Format("AccountTelemetryAddOn: account '{0}' not found, telemetry export disabled.", accountName),
                     PrintTo.OutputTab1);
                 return;
             }
 
             ResetDayBoundaryIfNeeded(force: true);
 
-            exportTimer = new System.Timers.Timer(Math.Max(1, ExportIntervalSeconds) * 1000.0);
+            exportTimer = new System.Timers.Timer(Math.Max(1, exportIntervalSeconds) * 1000.0);
             exportTimer.Elapsed += (sender, args) => SafeExportOnce();
             exportTimer.AutoReset = true;
             exportTimer.Start();
 
+            NinjaTrader.Code.Output.Process(
+                string.Format(
+                    "AccountTelemetryAddOn: started. account='{0}' outputJsonPath='{1}' intervalSeconds={2}",
+                    accountName, outputJsonPath, exportIntervalSeconds),
+                PrintTo.OutputTab1);
+
             // Export once immediately so a fresh start doesn't leave a stale
-            // or missing file for up to ExportIntervalSeconds.
+            // or missing file for up to exportIntervalSeconds.
             SafeExportOnce();
         }
 
@@ -164,21 +201,21 @@ namespace NinjaTrader.NinjaScript.AddOns
 
         private void WriteJsonAtomically(object payload)
         {
-            string directory = Path.GetDirectoryName(OutputJsonPath);
+            string directory = Path.GetDirectoryName(outputJsonPath);
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
                 Directory.CreateDirectory(directory);
 
             string json = SerializeFlatObject(payload);
-            string tempPath = OutputJsonPath + ".tmp";
+            string tempPath = outputJsonPath + ".tmp";
             File.WriteAllText(tempPath, json);
 
             // File.Replace/Move with overwrite is the closest .NET equivalent
             // of the temp-write-then-rename pattern used in oif_writer.py --
             // the Python reader never observes a partially written file.
-            if (File.Exists(OutputJsonPath))
-                File.Replace(tempPath, OutputJsonPath, null);
+            if (File.Exists(outputJsonPath))
+                File.Replace(tempPath, outputJsonPath, null);
             else
-                File.Move(tempPath, OutputJsonPath);
+                File.Move(tempPath, outputJsonPath);
         }
 
         // Minimal hand-rolled serializer for our known flat payload shape --

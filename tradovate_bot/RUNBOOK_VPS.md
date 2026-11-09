@@ -69,38 +69,45 @@ corrected.
 
 ## 4. Install the read-only telemetry AddOn
 
-1. Copy `ninjatrader_addon\AccountTelemetryAddOn.cs` from this repo into
-   `Documents\NinjaTrader 8\bin\Custom\AddOns\`.
-2. In NT8: Tools → Edit NinjaScript → AddOn → Compile (F5). Confirm no
-   compile errors.
-3. Restart NT8 so the AddOn loads.
-4. Set its properties (NT8's AddOn options/control center):
-   - **Account Name** → the Lucid account's exact NT8 name (same value used
-     for `NT8_ACCOUNT_ID` in step 5).
-   - **Output JSON Path** → e.g.
-     `C:\Claude_Trading_v2\tradovate_bot\state\account_telemetry.json`.
-5. Verify manually: open that JSON path in Notepad after a few seconds and
-   confirm the numbers match NT8's own Cash Value / Account Performance
-   display. This is the sanity check already flagged as unverified in
-   `tradovate_bot/README.md` — do it now, including watching it survive one
-   day rollover, before trusting it for the funded account.
+1. Copy `ninjatrader_addon\AccountTelemetryAddOn.cs` from this repo into `Documents\NinjaTrader 8\bin\Custom\AddOns\`.
+   copy ninjatrader_addon\AccountTelemetryAddOn.cs "C:\Users\Administrator\Documents\NinjaTrader 8\bin\Custom\AddOns\"
+2. In NT8: Tools → Edit NinjaScript → AddOn → Compile (F5). Confirm no compile errors.
+3. Set the environment variables in step 5 below **before** restarting NT8
+   — the AddOn has no window, so NT8 has no properties screen for it; it
+   reads its config from the same `NT8_ACCOUNT_ID` /
+   `ACCOUNT_TELEMETRY_JSON_PATH` env vars the Python executor uses, plus
+   the optional `ACCOUNT_TELEMETRY_EXPORT_INTERVAL_SECONDS` (default `5`).
+4. Restart NT8 so the AddOn loads with that config.
+5. Verify it's running: open NT8's NinjaScript Output window (Control
+   Center → New → NinjaScript Output) and look for a line starting with
+   `AccountTelemetryAddOn: started.` — there is no menu entry to "find" for
+   a headless AddOn like this one; the Output window is the real signal. A
+   line like `account '...' not found` instead means `NT8_ACCOUNT_ID`
+   doesn't match any connected account's exact name (check NT8's Accounts
+   tab).
+6. Once it's logging as started, open the configured JSON path in Notepad
+   after a few seconds and confirm the numbers match NT8's own Cash Value /
+   Account Performance display. This is the sanity check already flagged
+   as unverified in `tradovate_bot/README.md` — do it now, including
+   watching it survive one day rollover, before trusting it for the funded
+   account.
 
 ## 5. Configure environment variables
 
 Same contract as `tradovate_bot/README.md`. Set at machine scope so they
 survive reboots (PowerShell as Administrator):
 ```powershell
-[Environment]::SetEnvironmentVariable("NT8_INCOMING_DIR", "C:\Users\<user>\Documents\NinjaTrader 8\incoming", "Machine")
-[Environment]::SetEnvironmentVariable("NT8_OUTGOING_DIR", "C:\Users\<user>\Documents\NinjaTrader 8\outgoing", "Machine")
-[Environment]::SetEnvironmentVariable("NT8_ACCOUNT_ID", "<exact NT8 account name>", "Machine")
-[Environment]::SetEnvironmentVariable("ACCOUNT_TELEMETRY_JSON_PATH", "C:\Claude_Trading_v2\tradovate_bot\state\account_telemetry.json", "Machine")
+[Environment]::SetEnvironmentVariable("NT8_INCOMING_DIR", "C:\Users\Administrator\Documents\NinjaTrader 8\incoming", "Machine")
+[Environment]::SetEnvironmentVariable("NT8_OUTGOING_DIR", "C:\Users\Administrator\Documents\NinjaTrader 8\outgoing", "Machine")
+[Environment]::SetEnvironmentVariable("NT8_ACCOUNT_ID", "Sim101", "Machine")
+[Environment]::SetEnvironmentVariable("ACCOUNT_TELEMETRY_JSON_PATH", "C:\TradingPlatform_v2\Claude_Trading_v2\tradovate_bot\state\account_telemetry.json", "Machine")
 ```
 Open a new terminal afterward so it picks up the machine-level values.
 
 ## 6. Run it once in the foreground first
 
 ```powershell
-cd C:\Claude_Trading_v2
+cd C:\TradingPlatform_v2\Claude_Trading_v2
 python -m tradovate_bot.executor
 ```
 With `trader/orders.json` empty or absent, a clean startup line on stderr
@@ -122,7 +129,7 @@ In the GUI NSSM opens:
 - **Startup directory**: `C:\Claude_Trading_v2`
 - **Arguments**: `-m tradovate_bot.executor`
 - **I/O tab**: redirect stdout/stderr to, e.g.,
-  `C:\Claude_Trading_v2\tradovate_bot\state\executor.stdout.log` /
+  `C:\TradingPlatform_v2\Claude_Trading_v2\tradovate_bot\state\executor.stdout.log` /
   `executor.stderr.log`
 - **Environment tab** (only if step 5's vars weren't set at Machine scope):
   add them here, one `NAME=value` per line.
@@ -130,7 +137,7 @@ In the GUI NSSM opens:
 Start and verify:
 ```powershell
 nssm start TradovateExecutor
-Get-Content C:\Claude_Trading_v2\tradovate_bot\state\decisions.log.jsonl -Tail 5
+Get-Content C:\TradingPlatform_v2\Claude_Trading_v2\tradovate_bot\state\decisions.log.jsonl -Tail 5
 ```
 
 Stop/restart:

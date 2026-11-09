@@ -39,8 +39,25 @@ NinjaScript AddOn for account telemetry.
 exports account balance/P&L to a JSON file for `executor.py`/`risk_guard`
 to read. It never places, modifies, or cancels an order; it only reads
 `Account.Get(...)` and writes a file. Install it into NT8 (NinjaScript
-Editor -> paste/import -> compile) and set its `Account Name` and
-`Output JSON Path` properties to match the values below.
+Editor -> paste/import -> compile).
+
+This AddOn has no window, and NinjaTrader does not expose any UI to edit
+`[NinjaScriptProperty]` values on a windowless AddOn (NinjaTrader support
+confirms those are only settable from inside an AddOn's own custom window).
+So it is **not** configured from any NT8 properties screen -- it reads the
+same environment variables as the Python executor, listed below
+(`NT8_ACCOUNT_ID`, `ACCOUNT_TELEMETRY_JSON_PATH`,
+`ACCOUNT_TELEMETRY_EXPORT_INTERVAL_SECONDS`), once at startup.
+
+**How to confirm it's actually running:** a headless AddOn does not need,
+and will not get, any menu entry -- NinjaTrader instantiates and activates
+it automatically at startup and on every NinjaScript compile, with nothing
+to "find" in a menu. Instead, open NT8's NinjaScript Output window
+(Control Center -> New -> NinjaScript Output) and look for a line starting
+with `AccountTelemetryAddOn: started.` -- it logs the account/path/interval
+it resolved. If you instead see `account '...' not found`, the configured
+`NT8_ACCOUNT_ID` doesn't match any connected account's name in NT8 (check
+NT8's Accounts tab for the exact literal name).
 
 **Not independently verified against a live/demo NT8 instance** (built
 without NT8 runtime access). Before trusting it for the funded account:
@@ -75,6 +92,7 @@ stopped updating it, we refuse to trade rather than act on stale data.
 | `NT8_ACCOUNT_ID` | The NT8 account *name* string (e.g. `Sim101`), not a Tradovate numeric id |
 | `ACCOUNT_TELEMETRY_JSON_PATH` | Path to the AddOn's telemetry JSON file |
 | `ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS` | Max age of telemetry before it's treated as stale (default `30`) |
+| `ACCOUNT_TELEMETRY_EXPORT_INTERVAL_SECONDS` | Read by the NinjaScript AddOn only (not `executor.py`): how often it re-exports the telemetry JSON (default `5`) |
 | `TRADOVATE_ORDERS_PATH` | Path to the approved-orders file (default `trader/orders.json`) |
 | `TRADOVATE_POLL_INTERVAL_SECONDS` | Main loop poll interval (default `5`) |
 

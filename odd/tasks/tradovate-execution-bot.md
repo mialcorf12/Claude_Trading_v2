@@ -79,7 +79,7 @@ separate signal (Claude) from execution (deterministic bot).
 - [ ] ~~WebSocket listener reconnects...~~ SUPERSEDED — no WebSocket in the ATI/OIF path; replaced by tailing NT8's `outgoing` folder for confirmation files.
 - [x] README documents env vars required and how to switch demo → live. Still accurate for the parts that remain (no hardcoded creds), but the demo/live Tradovate env var is moot under ATI — README needs a rewrite pass when the OIF module lands.
 - [x] NEW: OIF writer module places/cancels/closes a position via NT8 ATI and the resulting order/position confirmation files are correctly parsed. Evidence: `python -m pytest tests/tradovate_bot/test_oif_writer.py tests/tradovate_bot/test_executor.py -v` → 24 passed. Caveat: `tail_outgoing`'s "parsing" is an intentionally honest generic semicolon-split (filename-convention account/instrument/kind only) — the outgoing files' internal field semantics are still unconfirmed against a real NT8 instance; these confirmations feed fill-logging only, never risk_guard.
-- [x] NEW: Read-only NinjaScript AddOn exports account realized P&L (today + total) and EOD cash balance to a JSON file NT8-side, and `executor`/`risk_guard` can read it. `ninjatrader_addon/AccountTelemetryAddOn.cs` + `tradovate_bot/account_state.py` (10/10 tests passing, see below). Caveat: the AddOn itself is **not independently verified against a live/demo NT8 instance** — no NT8 runtime was available to compile/run it this session. Must be sanity-checked on the VPS (including a real day-rollover) before being trusted for the funded account.
+- [x] NEW: Read-only NinjaScript AddOn exports account realized P&L (today + total) and EOD cash balance to a JSON file NT8-side, and `executor`/`risk_guard` can read it. `ninjatrader_addon/AccountTelemetryAddOn.cs` + `tradovate_bot/account_state.py` (10/10 tests passing, see below). Caveat: the AddOn itself is **not independently verified against a live/demo NT8 instance** — no NT8 runtime was available to compile/run it this session. Must be sanity-checked on the VPS (including a real day-rollover) before being trusted for the funded account. Fixed 2026-11-09: the AddOn originally exposed its config as `[NinjaScriptProperty]` fields, which NinjaTrader cannot show/edit on a windowless AddOn (confirmed via NinjaTrader's own docs/support forum) — it compiled clean but was permanently stuck on hardcoded defaults with no way to find it "active" in any menu (there was never going to be one). Reworked to read `NT8_ACCOUNT_ID`/`ACCOUNT_TELEMETRY_JSON_PATH`/`ACCOUNT_TELEMETRY_EXPORT_INTERVAL_SECONDS` from environment variables (same ones the Python side already uses) and to log a clear `AccountTelemetryAddOn: started. ...` line to NT8's NinjaScript Output window as the real "is it running" signal.
 - [x] NEW: VPS deployment runbook exists covering git clone/pull, Python install, NT8 ATI settings, AddOn install, env var config, and unattended run via NSSM/Task Scheduler. Evidence: `tradovate_bot/RUNBOOK_VPS.md`. Caveat: written without VPS/NT8 runtime access (per the closed remote-access decision) — exact NT8 ATI menu wording and the AddOn's day-rollover behavior still need the user to verify on the real machine; the runbook says so explicitly.
 - [ ] NEW: Whole stack (NT8 + AddOn + Python executor) actually running unattended on the Windows VPS without manual restarts. Not started — the runbook above exists, but no one has executed it on the real VPS yet.
 
@@ -135,6 +135,25 @@ separate signal (Claude) from execution (deterministic bot).
   documentation only — nobody has run it against the real VPS yet, so the
   final "whole stack runs unattended" acceptance criterion stays open until
   the user executes it and reports back.
+- 2026-11-09: User compiled `AccountTelemetryAddOn.cs` in NT8 with no
+  errors but couldn't find it active in any menu. Researched NinjaTrader
+  8's actual AddOn lifecycle (NinjaTrader's own docs + support forum,
+  cited in the fix commit) instead of guessing: a headless/windowless
+  AddOn needs no menu entry and runs automatically at startup — that part
+  was never broken. The real defect: `[NinjaScriptProperty]` values are
+  only editable from inside an AddOn's own custom window per NinjaTrader
+  support, so this windowless AddOn's `AccountName`/`OutputJsonPath`/
+  `ExportIntervalSeconds` could never be changed from NT8's UI as the
+  README previously (incorrectly) instructed. Fixed: the AddOn now reads
+  `NT8_ACCOUNT_ID`/`ACCOUNT_TELEMETRY_JSON_PATH`/
+  `ACCOUNT_TELEMETRY_EXPORT_INTERVAL_SECONDS` from environment variables
+  (shared with the Python side), logs a `AccountTelemetryAddOn: started.`
+  line to NT8's NinjaScript Output window so "is it running" has an actual
+  signal to check, and matches account names case-insensitively. README
+  and RUNBOOK_VPS.md corrected to match. Still not independently verified
+  against a live NT8 instance — the user needs to recompile, set/confirm
+  the env vars, restart NT8, and check NinjaScript Output per the updated
+  runbook.
 
 Still true regardless of transport: `risk_guard.py` is pure, deterministic,
 fail-closed, test-first, and already covers every Lucid risk-rule case —
