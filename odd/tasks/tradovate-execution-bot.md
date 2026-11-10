@@ -222,3 +222,121 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   is an open Long 3 `MNQ 12-26` position on Sim101** with that bracket
   still working -- check `NT8_OUTGOING_DIR`/NT8's own Sim101 position
   display before assuming flat in a future session.
+- 2026-11-10 00:07 ET: Started an hourly overnight trading loop (local
+  CronCreate job `cbb6f9d1`, "7 * * * *", session-only -- dies if this
+  Claude session closes, auto-expires after 7 days). Each cycle: check
+  Sim101's current `Market position` from NT8's own log first (no
+  automated one-at-a-time code exists yet -- this manual log check IS the
+  safeguard the user asked for), skip if not flat, else fetch fresh
+  MNQ=F/NQ=F data, judge BUY/SELL from genuine structure (skip rather than
+  force a trade on weak/missing data), size a 3-contract bracket off a
+  fresh quote, place it the same way as tonight's manual runs, and verify
+  against NT8's log before reporting anything.
+  First cycle (run immediately, not waiting for the first cron fire):
+  checked position -- the prior Long 3 position (entry above) had already
+  closed via its take-profit at 23:58:37 ET: 3x 1-contract fills at
+  27976.00 (exactly the TP level), realized ~+$235.50 gross (3 x 39.25 pts
+  x $2/pt) -- more than the ~$100 target, because the entry filled at
+  27936.75, well below the 27959.25 reference quote the bracket was sized
+  from (slippage between quote-time and fill-time can make realized P&L
+  diverge meaningfully from the intended $ target when TP/SL are priced
+  off a pre-fill quote, not the actual fill). Account back to flat.
+  Then fetched fresh data for a new entry and hit a real data gap: right
+  at the ET midnight rollover, Yahoo's NQ=F 5m/1d chart returned no
+  `timestamp` array at all, and the 2d/5d range showed only sparse bars
+  with a ~1h45m hole (real bars to 22:15 ET, then nothing until a single
+  23:59 bar) -- not enough structure to judge direction honestly. Skipped
+  the trade this cycle rather than force one; next cron fire (~1:07 ET)
+  retries once the post-midnight bar feed should have normalized.
+  Second cycle (2026-11-10, ~01:21 ET): checked position first -- still
+  flat (no entries placed since the prior cycle). Fetched fresh NQ=F/MNQ=F
+  5m/1d bars; the midnight data gap was gone, full bar series from 00:05
+  to 01:21 ET. Read: a clean rally from ~27968 to a ~28042 high by 00:40
+  ET (+74 pts), then a reversal that gave back more than half the move,
+  dropping to ~27986.5 by 01:10 ET, then a weak bounce to ~28005 before
+  settling at 27999-28001 (last/MNQ=F quote: 28001.0, essentially flat on
+  the day at -0.05%). The last ~25 minutes (00:55-01:21 ET) oscillated in
+  a ~48-point range (27986.5-28034) with no clean directional follow-
+  through in either direction -- a spike-and-fade with no fresh edge, not
+  a tradeable structure. Skipped the trade (per step 3: no clear
+  directional edge) rather than force a BUY or SELL on a choppy read; no
+  order file written. Next cron fire (~2:07 ET) re-evaluates fresh.
+  Third cycle (2026-11-10, ~02:21 ET): checked position first -- still
+  flat. Fresh NQ=F/MNQ=F bars showed a genuine downtrend over the prior
+  ~90 min: high ~28042 at 00:40 ET, lower highs/lower lows down to a
+  27937.25 low at 02:10 ET (-105 pts), then a decelerating bounce to
+  27971/27970.5 (current) -- read as SELL on the bounce, with-trend.
+  Computed bracket off the 27970.5 MNQ=F reference: stop_loss_stop_price
+  28003.75 (+33.25 pts), take_profit_limit_price 27953.75 (-16.75 pts),
+  qty 3, side sell. **risk_guard rejected the order**: "consistency rule
+  breached: today's profit 235.50 exceeds 40% of total 235.50" -- the
+  Lucid Flex Eval's 40% single-day-concentration rule (risk_guard.py's
+  `CONSISTENCY_PCT`), structurally breached right now because the only
+  realized profit on this account ever (the ~$235.50 TP close from
+  cycle 1) is 100% of lifetime total, so any same-day profit will fail
+  this check until more trading days dilute the ratio below 40%. No OIF
+  command was written (write_command never called -- confirmed: incoming
+  folder empty, NT8 log unchanged since 23:58:37 ET). Per the hard-limit
+  rule, no further entries will be proposed tonight; risk_guard will
+  continue to self-enforce this same rejection on every future cron fire
+  until the ratio naturally resolves (new trading days add to
+  `total_realized_profit`'s denominator) -- no code change or override
+  applied, by design.
+  Fourth cycle (2026-11-10, ~03:31 ET): checked position -- still flat.
+  Checked `account_telemetry.json` directly before building a new signal:
+  unchanged since cycle 3 (daily_profit_today=235.50,
+  total_realized_profit=235.50, same 100% concentration). Since the
+  cycle-3 consistency-rule rejection is structural and depends only on
+  this telemetry (not on the new order's direction/price), skipped
+  re-fetching Yahoo data and rebuilding a bracket this cycle -- it would
+  be rejected the same way regardless of BUY/SELL. No order attempted,
+  no OIF written. Standing hard-limit block from cycle 3 still in effect;
+  will keep checking telemetry each cycle rather than re-deriving a full
+  signal while it stays unchanged.
+  Fifth cycle (2026-11-10, ~04:30 ET): checked position -- still flat.
+  Telemetry still unchanged (daily_profit_today=235.50,
+  total_realized_profit=235.50). Same structural consistency-rule block
+  from cycle 3 still in effect; skipped rebuilding a signal for the same
+  reason as cycle 4. No order attempted.
+  Sixth cycle (2026-11-10, ~05:30 ET): checked position -- still flat.
+  Telemetry still unchanged (daily_profit_today=235.50,
+  total_realized_profit=235.50). Same consistency-rule block still in
+  effect; no order attempted.
+  Seventh cycle (2026-11-10, ~06:30 ET): checked position -- still flat.
+  Telemetry still unchanged (daily_profit_today=235.50,
+  total_realized_profit=235.50). Same consistency-rule block still in
+  effect; no order attempted. This block will only clear once a new
+  trading day's activity changes the profit/total ratio (EOD rollover
+  and/or a new closed trade) -- it is expected to persist for the rest
+  of tonight's remaining cycles.
+  Confirmed (user asked where this lives): `check_consistency` in
+  `tradovate_bot/risk_guard.py:87-99` (CONSISTENCY_PCT=0.40, line 28).
+  The EOD/day-boundary reset is NOT in Python -- it's in the NinjaScript
+  AddOn, `ninjatrader_addon/AccountTelemetryAddOn.cs:194-212`
+  (`ResetDayBoundaryIfNeeded`), which rolls the trading day over at
+  17:00 ET (not VPS midnight) and recalculates `eod_balance_last_close`
+  / resets `daily_profit_today` at that boundary.
+  Eighth cycle (2026-11-10, ~07:30 ET): checked position -- still flat.
+  Telemetry still unchanged (daily_profit_today=235.50,
+  total_realized_profit=235.50). Same consistency-rule block still in
+  effect; no order attempted.
+  **Fix (2026-11-10, user-identified issue):** `check_consistency` in
+  `risk_guard.py` compared `daily_profit_today` against 40% of
+  `total_realized_profit` (profit realized so far), which self-defeats on
+  any account's first-ever profitable day -- that day's profit is always
+  100% of the near-zero running total, so the rule could never be
+  satisfied until several more trading days diluted the ratio (exactly
+  what blocked every cycle tonight after cycle 1's TP close). User
+  confirmed via AskUserQuestion the correct formula compares against the
+  fixed `PROFIT_TARGET` ($1250) instead: `daily_profit_today > 0.40 *
+  PROFIT_TARGET` (threshold $500), independent of total_realized_profit.
+  Applied test-first (RED: 3 updated/new tests failed against old code --
+  boundary-at-$500 test, the overnight-lockout regression test, and the
+  direct check_consistency test; GREEN: all 76 tests in tests/tradovate_bot/
+  pass after the fix). total_realized_profit is still validated as a
+  required finite-number field (fail-closed preserved) even though it no
+  longer drives the comparison. Changed: `tradovate_bot/risk_guard.py`
+  (`check_consistency` + module docstring),
+  `tests/tradovate_bot/test_risk_guard.py`. With this fix, tonight's
+  $235.50/$235.50 state would now PASS (235.50 < 500) -- the next cron
+  cycle will re-evaluate a fresh signal for real instead of self-blocking.

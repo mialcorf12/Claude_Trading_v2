@@ -5,7 +5,8 @@ Lucid Trading 25k Flex Eval parameters under test:
   - Max loss limit: $1000, End-of-Day drawdown type (floor = EOD balance from
     last close - 1000, recalculated once per day, never adjusted intraday).
   - Consistency rule: 40% (no single day's realized profit may exceed 40% of
-    total realized profit counted toward the $1250 profit target).
+    the $1250 PROFIT_TARGET -- not 40% of profit realized so far, which would
+    falsely reject the very first profitable day of an evaluation).
   - Position sizing: MNQ only, hard cap 3 contracts.
   - Fail-closed on any missing/ambiguous/malformed account-state input.
 
@@ -94,21 +95,33 @@ def test_eod_max_loss_exactly_at_floor_passes():
 # ---------------------------------------------------------------- consistency rule
 
 def test_consistency_rule_breached_rejects():
-    # today's profit is more than 40% of total realized profit
+    # today's profit (600) is more than 40% of the $1250 PROFIT_TARGET (500)
     state = base_account_state(daily_profit_today=600.0, total_realized_profit=1000.0)
     decision = rg.evaluate_order(base_order(), state)
     assert decision.allow is False
     assert "consistency" in decision.reason.lower()
 
 
-def test_consistency_rule_at_exactly_40_percent_passes():
-    state = base_account_state(daily_profit_today=400.0, total_realized_profit=1000.0)
+def test_consistency_rule_at_exactly_40_percent_of_target_passes():
+    # 0.40 * PROFIT_TARGET (1250) == 500.0, exactly at the boundary
+    state = base_account_state(daily_profit_today=500.0, total_realized_profit=1000.0)
     decision = rg.evaluate_order(base_order(), state)
     assert decision.allow is True
 
 
 def test_consistency_rule_no_profit_yet_passes():
     state = base_account_state(daily_profit_today=0.0, total_realized_profit=0.0)
+    decision = rg.evaluate_order(base_order(), state)
+    assert decision.allow is True
+
+
+def test_consistency_rule_ignores_cumulative_total_not_the_fixed_target():
+    # Regression for the overnight lockout (2026-11-10): a first-ever
+    # profitable day made total_realized_profit == daily_profit_today, so
+    # comparing against total_realized_profit always breached (100% > 40%).
+    # The rule must compare against the fixed PROFIT_TARGET instead, so a
+    # modest first-day profit should pass regardless of the cumulative total.
+    state = base_account_state(daily_profit_today=235.5, total_realized_profit=235.5)
     decision = rg.evaluate_order(base_order(), state)
     assert decision.allow is True
 
@@ -193,9 +206,23 @@ def test_check_max_loss_function_directly():
 
 
 def test_check_consistency_function_directly():
+    # threshold is 0.40 * PROFIT_TARGET (1250) = 500.0, regardless of
+    # total_realized_profit
     ok, reason = rg.check_consistency(daily_profit_today=300.0, total_realized_profit=1000.0)
     assert ok is True
-    ok, reason = rg.check_consistency(daily_profit_today=500.0, total_realized_profit=1000.0)
+    ok, reason = rg.check_consistency(daily_profit_today=600.0, total_realized_profit=1000.0)
+    assert ok is False
+    # same daily_profit_today, wildly different total_realized_profit ->
+    # same outcome, since the cumulative total no longer drives the decision
+    ok, reason = rg.check_consistency(daily_profit_today=300.0, total_realized_profit=1.0)
+    assert ok is True
+
+
+def test_check_consistency_rejects_non_finite_total_realized_profit():
+    # total_realized_profit no longer drives the comparison, but it's still
+    # a required account_state field, so a malformed value must still fail
+    # closed rather than be silently ignored.
+    ok, reason = rg.check_consistency(daily_profit_today=100.0, total_realized_profit=float("nan"))
     assert ok is False
 
 
