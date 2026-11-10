@@ -52,12 +52,13 @@ def _write_telemetry(tmp_path, monkeypatch, **overrides):
 
 def test_normalize_order_maps_trader_broker_shape():
     raw = {"symbol": "mnq", "side": "Buy", "qty": "2", "type": "market",
-           "stop_loss_stop_price": 20000.0, "take_profit_limit_price": 20200.0}
+           "stop_loss_points": 33.25, "take_profit_points": 16.75}
     order = executor.normalize_order(raw)
     assert order["symbol"] == "MNQ"
     assert order["side"] == "buy"
     assert order["qty"] == 2.0
-    assert order["stop_loss_stop_price"] == 20000.0
+    assert order["stop_loss_points"] == 33.25
+    assert order["take_profit_points"] == 16.75
 
 
 def test_normalize_order_rejects_missing_fields():
@@ -206,15 +207,12 @@ def test_poll_outgoing_once_logs_fills_and_advances_seen_files(isolated_state, m
 
 def test_build_bracket_exit_commands_returns_empty_when_no_exit_prices():
     order = executor.normalize_order({"symbol": "MNQ", "side": "sell", "qty": 3, "type": "market"})
-    assert executor.build_bracket_exit_commands(order, account="SIM101") == []
+    assert executor.build_bracket_exit_commands(order, None, None, account="SIM101") == []
 
 
 def test_build_bracket_exit_commands_builds_stop_and_target_with_shared_oco():
-    order = executor.normalize_order({
-        "symbol": "MNQ", "side": "sell", "qty": 3, "type": "market",
-        "stop_loss_stop_price": 27990.0, "take_profit_limit_price": 27850.0,
-    })
-    commands = executor.build_bracket_exit_commands(order, account="SIM101")
+    order = executor.normalize_order({"symbol": "MNQ", "side": "sell", "qty": 3, "type": "market"})
+    commands = executor.build_bracket_exit_commands(order, 27990.0, 27850.0, account="SIM101")
 
     assert len(commands) == 2
     stop_cmd, target_cmd = commands
@@ -229,11 +227,8 @@ def test_build_bracket_exit_commands_builds_stop_and_target_with_shared_oco():
 
 
 def test_build_bracket_exit_commands_builds_only_stop_when_target_missing():
-    order = executor.normalize_order({
-        "symbol": "MNQ", "side": "buy", "qty": 2, "type": "market",
-        "stop_loss_stop_price": 27500.0,
-    })
-    commands = executor.build_bracket_exit_commands(order, account="SIM101")
+    order = executor.normalize_order({"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market"})
+    commands = executor.build_bracket_exit_commands(order, 27500.0, None, account="SIM101")
 
     assert len(commands) == 1
     fields = commands[0].split(";")
@@ -241,24 +236,169 @@ def test_build_bracket_exit_commands_builds_only_stop_when_target_missing():
     assert fields[9] == ""  # no OCO when there's only one exit leg
 
 
-def test_process_order_places_entry_and_bracket_legs_when_prices_present(isolated_state, monkeypatch):
+# ---------------------------------------------------------------- fill-driven bracket pricing
+
+def test_compute_bracket_prices_from_fill_for_buy():
+    order = executor.normalize_order({
+        "symbol": "MNQ", "side": "buy", "qty": 3, "type": "market",
+        "stop_loss_points": 33.25, "take_profit_points": 16.75,
+    })
+    stop_price, target_price = executor.compute_bracket_prices_from_fill(order, fill_price=27800.0)
+    assert stop_price == 27766.75  # below fill, protects a long
+    assert target_price == 27816.75  # above fill
+
+
+def test_compute_bracket_prices_from_fill_for_sell():
+    order = executor.normalize_order({
+        "symbol": "MNQ", "side": "sell", "qty": 3, "type": "market",
+        "stop_loss_points": 33.25, "take_profit_points": 16.75,
+    })
+    stop_price, target_price = executor.compute_bracket_prices_from_fill(order, fill_price=27800.0)
+    assert stop_price == 27833.25  # above fill, protects a short
+    assert target_price == 27783.25  # below fill
+
+
+def test_compute_bracket_prices_from_fill_rounds_to_nearest_quarter_tick():
+    order = executor.normalize_order({
+        "symbol": "MNQ", "side": "buy", "qty": 3, "type": "market",
+        "stop_loss_points": 33.25, "take_profit_points": 16.75,
+    })
+    # a multi-lot average fill price is rarely on the 0.25 grid
+    stop_price, target_price = executor.compute_bracket_prices_from_fill(order, fill_price=27977.916666666668)
+    assert stop_price == 27944.75
+    assert target_price == 27994.75
+
+
+def test_compute_bracket_prices_from_fill_returns_none_when_points_not_requested():
+    order = executor.normalize_order({"symbol": "MNQ", "side": "buy", "qty": 3, "type": "market"})
+    stop_price, target_price = executor.compute_bracket_prices_from_fill(order, fill_price=27800.0)
+    assert stop_price is None
+    assert target_price is None
+
+
+# ---------------------------------------------------------------- waiting for the real fill
+
+def test_wait_for_entry_fill_returns_filled_price_from_outgoing_record(isolated_state, monkeypatch):
+    monkeypatch.setattr(executor.time, "sleep", lambda s: None)
+    responses = iter([
+        ([], {"a"}),
+        ([{"raw_fields": ["FILLED", "3", "27977.9166666667"]}], {"a", "b"}),
+    ])
+    monkeypatch.setattr(executor.oif_writer, "tail_outgoing", lambda d, seen: next(responses))
+
+    result = executor.wait_for_entry_fill(seen_files=set(), timeout_seconds=1.0, poll_interval_seconds=0)
+
+    assert result.status == "filled"
+    assert result.price == 27977.9166666667
+
+
+def test_wait_for_entry_fill_returns_rejected_when_nt8_rejects(isolated_state, monkeypatch):
+    monkeypatch.setattr(executor.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        executor.oif_writer, "tail_outgoing",
+        lambda d, seen: ([{"raw_fields": ["REJECTED", "0", "0"]}], {"a"}),
+    )
+
+    result = executor.wait_for_entry_fill(seen_files=set(), timeout_seconds=1.0, poll_interval_seconds=0)
+
+    assert result.status == "rejected"
+    assert result.price is None
+
+
+def test_wait_for_entry_fill_returns_timeout_when_no_confirmation_arrives(isolated_state, monkeypatch):
+    monkeypatch.setattr(executor.time, "sleep", lambda s: None)
+    monkeypatch.setattr(executor.oif_writer, "tail_outgoing", lambda d, seen: ([], seen))
+
+    result = executor.wait_for_entry_fill(seen_files=set(), timeout_seconds=0.05, poll_interval_seconds=0)
+
+    assert result.status == "timeout"
+    assert result.price is None
+
+
+# ---------------------------------------------------------------- process_order, fill-driven bracket
+
+def test_process_order_waits_for_fill_then_places_bracket_from_real_fill_price(isolated_state, monkeypatch):
     _write_telemetry(isolated_state, monkeypatch)
     write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
     monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    monkeypatch.setattr(
+        executor, "wait_for_entry_fill",
+        lambda seen_files, **kw: executor.FillResult("filled", 27800.0),
+    )
     raw_order = {
         "symbol": "MNQ", "side": "sell", "qty": 3, "type": "market",
-        "stop_loss_stop_price": 27990.0, "take_profit_limit_price": 27850.0,
+        "stop_loss_points": 33.25, "take_profit_points": 16.75,
     }
 
     decision = executor.process_order(raw_order)
 
     assert decision.allow is True
-    assert write_command.call_count == 3
+    assert write_command.call_count == 3  # entry + stop + target
     sent_commands = [call.args[1] for call in write_command.call_args_list]
     assert sent_commands[0].split(";")[0:6] == ["PLACE", "SIM101", "MNQ 12-26", "SELL", "3", "MARKET"]
-    assert sent_commands[1].split(";")[0:6] == ["PLACE", "SIM101", "MNQ 12-26", "BUY", "3", "STOPMARKET"]
-    assert sent_commands[2].split(";")[0:6] == ["PLACE", "SIM101", "MNQ 12-26", "BUY", "3", "LIMIT"]
+    stop_fields = sent_commands[1].split(";")
+    target_fields = sent_commands[2].split(";")
+    assert stop_fields[0:6] == ["PLACE", "SIM101", "MNQ 12-26", "BUY", "3", "STOPMARKET"]
+    assert stop_fields[7] == "27833.25"  # fill (27800) + 33.25, above fill for a short
+    assert target_fields[0:6] == ["PLACE", "SIM101", "MNQ 12-26", "BUY", "3", "LIMIT"]
+    assert target_fields[6] == "27783.25"  # fill (27800) - 16.75, below fill for a short
 
+
+def test_process_order_flattens_defensively_on_fill_confirmation_timeout(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    monkeypatch.setattr(
+        executor, "wait_for_entry_fill",
+        lambda seen_files, **kw: executor.FillResult("timeout", None),
+    )
+    raw_order = {
+        "symbol": "MNQ", "side": "buy", "qty": 3, "type": "market",
+        "stop_loss_points": 33.25, "take_profit_points": 16.75,
+    }
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is True  # risk_guard passed; the flatten is a post-fill safety action
+    assert write_command.call_count == 2  # entry, then a defensive CLOSEPOSITION
+    sent_commands = [call.args[1] for call in write_command.call_args_list]
+    assert sent_commands[1].split(";")[0:3] == ["CLOSEPOSITION", "SIM101", "MNQ 12-26"]
     fills = _read_jsonl(executor.FILLS_LOG)
-    assert len(fills) == 3
-    assert all(f["status"] == "sent" for f in fills)
+    assert any(f.get("status") == "defensive_flatten_fill_confirmation_timeout" for f in fills)
+
+
+def test_process_order_skips_bracket_when_entry_rejected_by_nt8(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    monkeypatch.setattr(
+        executor, "wait_for_entry_fill",
+        lambda seen_files, **kw: executor.FillResult("rejected", None),
+    )
+    raw_order = {
+        "symbol": "MNQ", "side": "buy", "qty": 3, "type": "market",
+        "stop_loss_points": 33.25, "take_profit_points": 16.75,
+    }
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is True
+    assert write_command.call_count == 1  # entry only, no bracket, no flatten
+    fills = _read_jsonl(executor.FILLS_LOG)
+    assert any(f.get("status") == "entry_rejected_by_nt8" for f in fills)
+
+
+def test_process_order_refuses_bracket_when_outgoing_dir_not_configured(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    monkeypatch.setattr(executor, "NT8_OUTGOING_DIR", "")
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    raw_order = {
+        "symbol": "MNQ", "side": "buy", "qty": 3, "type": "market",
+        "stop_loss_points": 33.25, "take_profit_points": 16.75,
+    }
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is False
+    write_command.assert_not_called()

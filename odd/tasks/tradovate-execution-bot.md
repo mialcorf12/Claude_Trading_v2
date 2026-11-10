@@ -456,3 +456,88 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   defect that can leave a live position fully unprotected, not just
   cause early/suboptimal exits -- this needs a decision and a fix before
   the loop keeps running unattended.
+  User asked to validate Option 3 (ATM Strategy via executor.py). Checked
+  the repo: the OIF grammar's `[STRATEGY]`/`[STRATEGY ID]` fields exist
+  but their actual semantics were never documented or verified here --
+  no evidence they invoke an ATM Strategy template. From general
+  NinjaTrader knowledge (not verified in this session): ATM Strategies
+  are normally invoked via the NinjaScript `AtmStrategyCreate` API or
+  interactively, a different transport than the OIF/ATI file-drop
+  interface already working tonight. Told the user Option 3 likely
+  needs that separate API, not a tweak to the current OIF transport, and
+  recommended verifying against NT8's official docs or a live test
+  before committing to it. No code changed.
+  Thirteenth cycle (2026-11-10, ~10:39 ET): checked position -- flat
+  (confirmed closed from the prior incident). Fresh data: clear reversal
+  since the 10:00 ET top (28048.5) -- lower highs/lower lows down to
+  27870.0 (10:35 ET), bounce to 27890.75 (current). Read as SELL on the
+  bounce, continuing the pullback. Bracket off 27890.75: SL 27924.00, TP
+  27874.00, qty 3. risk_guard allowed it. Watched very carefully for any
+  leg rejection this time (per the near-miss two cycles ago). **No
+  rejection**, but the **same quote-staleness pattern recurred for a
+  4th time**: market gapped ~116 pts further down between the 27890.75
+  reference and the actual fill (entry avg 27774.67, far beyond the
+  intended 16.75-pt TP distance) -- the TP leg (BUY LIMIT @ 27874) was
+  already marketable at submission and filled within the same second
+  (avg 27776.25), closing for a small loss of $9.50 (3 x 1.583 pts x
+  $2/pt) rather than forming a real trade. The stop leg (BUY STOPMARKET
+  @ 27924) was Accepted correctly this time (valid direction, since
+  27924 was above the live market) and the OCO cancelled it cleanly once
+  the TP leg filled -- confirming the OCO mechanism itself works fine;
+  the earlier naked-position incident was specifically about the stop
+  price landing on the wrong side of a fast-moving market, not an OCO
+  design flaw in general. Telemetry: 342.00 (down from 351.50). This is
+  now 4 of the last ~5 trades distorted by the same root cause (quote
+  fetched before submission vs. actual fill price) in a market moving
+  unusually fast tonight -- strong evidence this needs Option 2 (size
+  the bracket off the confirmed fill price) built soon, not deferred.
+  Cron paused (2026-11-10, ~10:55 ET, user request): cancelled
+  `c9e1834b`. No job scheduled; account confirmed Flat at pause time.
+  **Option 2 implemented (2026-11-10, user request, test-first)**:
+  replaced caller-supplied absolute `stop_loss_stop_price`/
+  `take_profit_limit_price` with `stop_loss_points`/`take_profit_points`
+  (point distances). `process_order` now places the entry alone first,
+  waits for NT8's own fill confirmation via the new
+  `wait_for_entry_fill` (polls `NT8_OUTGOING_DIR`, default 10s timeout,
+  returns `FillResult(status, price)` with status filled/rejected/
+  timeout), then computes the bracket from that CONFIRMED price via the
+  new `compute_bracket_prices_from_fill` (tick-rounded to 0.25). If NT8
+  rejects the entry, no bracket is placed. If fill confirmation times
+  out, `process_order` defensively flattens via `CLOSEPOSITION` rather
+  than risk leaving a naked position (directly closes the gap that
+  caused the near-miss two cycles ago). `build_bracket_exit_commands`
+  signature changed to take explicit `stop_price`/`target_price`
+  arguments instead of reading absolute prices off the order. Added a
+  fail-closed refusal when a bracket is requested but
+  `NT8_OUTGOING_DIR` isn't configured (can't confirm a fill price at
+  all in that case). RED confirmed first (14 new/changed tests failing
+  against the old code), then GREEN: 84/86 tests in
+  `tests/tradovate_bot/` pass (the other 2 are the pre-existing,
+  expected `CONSISTENCY_PCT=2.00` live-edit mismatches, unrelated,
+  left untouched per the user's earlier instruction). Changed:
+  `tradovate_bot/executor.py`, `tests/tradovate_bot/test_executor.py`,
+  `tradovate_bot/README.md`. Not yet committed, and not yet tested
+  against a real live NT8 fill (the next live cycle, whenever the user
+  resumes, will be the first real-world test of this new path).
+  Default timeout tuned (user request): `FILL_CONFIRMATION_TIMEOUT_SECONDS`
+  default changed from 10s to 5s. README updated to match.
+  **First live test of the fill-driven bracket (2026-11-10, ~11:09 ET,
+  manual, user request)**: checked position -- flat. Fresh data: strong,
+  sustained downtrend since the 10:00 ET top (28048.5), -281 pts to a
+  27740.25 low (10:55 ET), modest bounce to 27767.25 (current). Read as
+  SELL on the bounce, continuing the trend. Order placed with the NEW
+  schema: side sell, qty 3, stop_loss_points 33.25, take_profit_points
+  16.75 (no absolute prices supplied by the caller at all). risk_guard
+  allowed it. **Confirmed working as designed**: entry filled clean at
+  27824.00 (single fill, not fragmented); executor waited for that
+  confirmation (SUBMITTED -> FILLED within ~0.6s per NT8's own log/
+  fills.jsonl) and only then computed the bracket from it: stop
+  27857.25 (fill + 33.25, correctly above fill for a short), target
+  27807.25 (fill - 16.75, correctly below). Both legs came back
+  ACCEPTED/WORKING -- no rejection, no instant-marketable fill this
+  time. Verified the position is genuinely still open afterward (Short
+  3 @ 27824 in NT8's log, telemetry unchanged at 342.00, no premature
+  close) -- this is the first cycle all night where the bracket landed
+  correctly on both sides on the first try. Order file cleaned up.
+  Position currently open with a live bracket; outcome will show up in
+  a future check.
