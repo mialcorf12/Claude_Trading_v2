@@ -12,7 +12,7 @@ set").
 Expected JSON contract written by the AddOn (flat, 1:1 field names):
 
     {
-      "updated_at": "<ISO 8601 UTC, e.g. 2026-11-09T14:32:05Z>",
+      "updated_at": "<ISO 8601 with explicit America/New_York offset, e.g. 2026-11-09T09:32:05-05:00>",
       "daily_realized_pnl": <number>,
       "eod_balance_last_close": <number>,
       "current_balance": <number>,
@@ -31,7 +31,9 @@ function never raises for a file/parse/data problem.
 import json
 import math
 import os
-from datetime import datetime, timezone
+from datetime import datetime
+
+from tradovate_bot import time_utils
 
 REQUIRED_FIELDS = (
     "daily_realized_pnl",
@@ -54,8 +56,10 @@ def _is_finite_number(v):
 
 
 def _parse_updated_at(value):
-    """Parses an ISO 8601 UTC timestamp like "2026-11-09T14:32:05Z".
-    Returns None if value isn't a parseable string."""
+    """Parses an ISO 8601 timestamp with an explicit America/New_York offset,
+    e.g. "2026-11-09T09:32:05-05:00". Also accepts a trailing "Z" (UTC) as
+    harmless backward-compatible defensive parsing. Returns None if value
+    isn't a parseable string."""
     if not isinstance(value, str):
         return None
     text = value.strip()
@@ -66,14 +70,14 @@ def _parse_updated_at(value):
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=time_utils.EASTERN)
     return parsed
 
 
 def read_account_state(json_path, max_staleness_seconds=30, now=None):
     """Reads and validates the AddOn's telemetry JSON file. Returns a dict
     with exactly REQUIRED_FIELDS on success, or {} on any failure."""
-    now = now if now is not None else datetime.now(timezone.utc)
+    now = now if now is not None else time_utils.now_et()
 
     try:
         with open(json_path, encoding="utf-8") as fh:

@@ -155,9 +155,9 @@ command sent) and per NT8 outgoing confirmation file observed.
 ## What is NOT verified yet
 
 1. The NinjaScript AddOn's behavior against a live/demo NT8 instance,
-   including whether its local-midnight day-boundary logic matches the
-   actual boundary Lucid/Tradovate use for the EOD drawdown floor
-   recalculation.
+   including whether its explicit 17:00-Eastern day-boundary rollover
+   matches the actual boundary Lucid/Tradovate use for the EOD drawdown
+   floor recalculation.
 2. The exact internal field layout of NT8 ATI's `outgoing` confirmation
    files.
 3. Whether NT8 deletes, renames, or otherwise consumes files from

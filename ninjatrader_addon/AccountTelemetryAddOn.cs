@@ -64,7 +64,14 @@ namespace NinjaTrader.NinjaScript.AddOns
 
         private double realizedPnlAtDayStart;
         private double cashValueAtDayStart;
-        private DateTime currentTradingDay = DateTime.MinValue;
+        private DateTime currentTradingDayBoundary = DateTime.MinValue;
+
+        // America/New_York via the Windows tz id "Eastern Standard Time" (it
+        // observes DST despite the name). Never compare this Eastern
+        // wall-clock DateTime against DateTime.Now/UtcNow directly -- Kind is
+        // ignored by comparison operators.
+        private static readonly TimeZoneInfo EasternZone =
+            TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
 
         protected override void OnStateChange()
         {
@@ -168,9 +175,11 @@ namespace NinjaTrader.NinjaScript.AddOns
                 double totalRealizedProfit = monitoredAccount.Get(AccountItem.RealizedProfitLoss, Currency.UsDollar);
                 double dailyProfitToday = totalRealizedProfit - realizedPnlAtDayStart;
 
+                DateTimeOffset easternNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, EasternZone);
+
                 var payload = new
                 {
-                    updated_at = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture),
+                    updated_at = easternNow.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture),
                     daily_realized_pnl = dailyProfitToday,
                     eod_balance_last_close = cashValueAtDayStart,
                     current_balance = currentBalance,
@@ -182,19 +191,25 @@ namespace NinjaTrader.NinjaScript.AddOns
             }
         }
 
-        // The account's trading day boundary is tracked locally (not NT8's
-        // exchange session calendar) using a simple local-midnight rollover.
-        // This is intentionally conservative/simple; if the Lucid/Tradovate
-        // "day" boundary for the EOD drawdown floor differs from local
-        // midnight, this must be revisited before going live -- see
+        // The account's trading day boundary rolls over explicitly at 17:00
+        // (5:00 PM) Eastern, not at local VPS machine midnight -- Lucid/
+        // Tradovate's EOD drawdown floor recalculates once per day at the
+        // close, so the boundary needs to track that close, not whatever
+        // timezone the VPS happens to be set to. The boundary is computed by
+        // converting a known UTC instant (DateTimeOffset.UtcNow) rather than
+        // constructing local time from scratch, so DST transition days are
+        // not ambiguous. This specific 17:00-ET boundary is still not
+        // verified against a live NT8/Lucid session -- see
         // tradovate_bot/README.md's verification checklist.
         private void ResetDayBoundaryIfNeeded(bool force)
         {
-            DateTime today = DateTime.Now.Date;
-            if (!force && today == currentTradingDay)
+            DateTimeOffset easternNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, EasternZone);
+            DateTime rolloverToday = easternNow.Date.AddHours(17);
+            DateTime currentBoundary = easternNow.DateTime >= rolloverToday ? rolloverToday : rolloverToday.AddDays(-1);
+            if (!force && currentBoundary == currentTradingDayBoundary)
                 return;
 
-            currentTradingDay = today;
+            currentTradingDayBoundary = currentBoundary;
             realizedPnlAtDayStart = monitoredAccount.Get(AccountItem.RealizedProfitLoss, Currency.UsDollar);
             cashValueAtDayStart = monitoredAccount.Get(AccountItem.CashValue, Currency.UsDollar);
         }

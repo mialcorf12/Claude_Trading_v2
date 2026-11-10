@@ -8,12 +8,11 @@ the actual account_state.read_account_state function.
 """
 import json
 import os
-from datetime import datetime, timezone
 from unittest import mock
 
 import pytest
 
-from tradovate_bot import executor
+from tradovate_bot import executor, time_utils
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +35,7 @@ def _read_jsonl(path):
 
 def _write_telemetry(tmp_path, monkeypatch, **overrides):
     payload = {
-        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "updated_at": time_utils.now_et_iso(),
         "daily_realized_pnl": 0.0,
         "eod_balance_last_close": 25000.0,
         "current_balance": 25000.0,

@@ -4,14 +4,18 @@ No real NT8/NinjaScript AddOn is touched; these only exercise the JSON file
 contract and the fail-closed behavior on every bad-input shape.
 """
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
-from tradovate_bot import account_state
+from tradovate_bot import account_state, time_utils
 
-FIXED_NOW = datetime(2026, 11, 9, 14, 32, 30, tzinfo=timezone.utc)
+# 2026-11-09 is in EST (standard time; DST ended 2026-11-01), so Eastern
+# wall-clock 09:32:30 is UTC 14:32:30 (-05:00 offset).
+FIXED_NOW = datetime(2026, 11, 9, 9, 32, 30, tzinfo=time_utils.EASTERN)
 
 
-def _good_payload(updated_at="2026-11-09T14:32:05Z"):
+def _good_payload(updated_at=None):
+    if updated_at is None:
+        updated_at = (FIXED_NOW - timedelta(seconds=25)).isoformat(timespec="seconds")
     return {
         "updated_at": updated_at,
         "daily_realized_pnl": -50.0,
@@ -65,13 +69,13 @@ def test_non_numeric_field_returns_empty_dict(tmp_path):
 
 
 def test_stale_updated_at_returns_empty_dict(tmp_path):
-    stale_time = (FIXED_NOW - timedelta(seconds=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stale_time = (FIXED_NOW - timedelta(seconds=31)).isoformat(timespec="seconds")
     path = _write(tmp_path, json.dumps(_good_payload(updated_at=stale_time)))
     assert account_state.read_account_state(path, now=FIXED_NOW) == {}
 
 
 def test_updated_at_within_staleness_window_is_accepted(tmp_path):
-    fresh_time = (FIXED_NOW - timedelta(seconds=29)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fresh_time = (FIXED_NOW - timedelta(seconds=29)).isoformat(timespec="seconds")
     path = _write(tmp_path, json.dumps(_good_payload(updated_at=fresh_time)))
     state = account_state.read_account_state(path, now=FIXED_NOW)
     assert state != {}
@@ -90,7 +94,7 @@ def test_non_dict_json_returns_empty_dict(tmp_path):
 
 
 def test_custom_max_staleness_seconds(tmp_path):
-    time_60s_ago = (FIXED_NOW - timedelta(seconds=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    time_60s_ago = (FIXED_NOW - timedelta(seconds=60)).isoformat(timespec="seconds")
     path = _write(tmp_path, json.dumps(_good_payload(updated_at=time_60s_ago)))
     assert account_state.read_account_state(path, max_staleness_seconds=30, now=FIXED_NOW) == {}
     assert account_state.read_account_state(path, max_staleness_seconds=120, now=FIXED_NOW) != {}

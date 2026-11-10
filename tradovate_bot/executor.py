@@ -22,9 +22,8 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
 
-from tradovate_bot import account_state, oif_writer, risk_guard
+from tradovate_bot import account_state, oif_writer, risk_guard, time_utils
 
 STATE_DIR = os.path.join(os.path.dirname(__file__), "state")
 DECISIONS_LOG = os.path.join(STATE_DIR, "decisions.log.jsonl")
@@ -50,10 +49,6 @@ ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS = float(
 )
 
 
-def _utc_now_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _ensure_state_dir():
     os.makedirs(STATE_DIR, exist_ok=True)
 
@@ -69,7 +64,7 @@ def _append_jsonl(path, record):
 
 def log_decision(order, decision, extra=None):
     record = {
-        "at": _utc_now_iso(),
+        "at": time_utils.now_et_iso(),
         "order": order,
         "allow": bool(decision.allow),
         "reason": decision.reason,
@@ -80,7 +75,7 @@ def log_decision(order, decision, extra=None):
 
 
 def log_fill(fill_record):
-    record = {"at": _utc_now_iso()}
+    record = {"at": time_utils.now_et_iso()}
     record.update(fill_record)
     _append_jsonl(FILLS_LOG, record)
 
