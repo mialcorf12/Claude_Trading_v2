@@ -100,6 +100,15 @@ stopped updating it, we refuse to trade rather than act on stale data.
 an unconfigured/ambiguous transport if `NT8_INCOMING_DIR`, `NT8_ACCOUNT_ID`,
 or `ACCOUNT_TELEMETRY_JSON_PATH` is unset.
 
+`executor.py` also has a hardcoded `NT8_INSTRUMENT` constant (currently
+`"MNQ 12-26"`) for the OIF command's INSTRUMENT field -- NT8 rejects the
+generic `"MNQ"` root outright (confirmed live: no market data available
+for it). This must be updated by hand every quarterly MNQ roll (Mar/Jun/
+Sep/Dec) to match NT8's own display name for the new front-month contract.
+It is intentionally not an env var or auto-computed from the roll
+calendar, by explicit choice, to stay consistent with `risk_guard.py`'s
+other hardcoded constants.
+
 ### Historical/moot env vars (client.py only, not used by executor.py)
 
 `TRADOVATE_USERNAME`, `TRADOVATE_PASSWORD`, `TRADOVATE_API_KEY`,

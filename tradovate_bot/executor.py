@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import time
+import uuid
 
 from tradovate_bot import account_state, oif_writer, risk_guard, time_utils
 
@@ -140,35 +141,94 @@ def fetch_account_state():
 # NT8 ATI action strings for futures are BUY/SELL (per NT8 ATI usage
 # examples in the task doc's confirmed grammar); this mapping is the one
 # place that assumption lives, isolated from oif_writer's pure grammar
-# functions.
+# functions. "stop" maps to "STOPMARKET", not "STOP" -- confirmed live
+# against a real NT8 instance: it rejected "STOP" outright with "holds
+# invalid order type parameter 'STOP'".
 _SIDE_TO_ATI_ACTION = {"buy": "BUY", "sell": "SELL"}
-_TYPE_TO_ATI_ORDER_TYPE = {"market": "MARKET", "limit": "LIMIT", "stop": "STOP"}
+_OPPOSITE_SIDE = {"buy": "sell", "sell": "buy"}
+_TYPE_TO_ATI_ORDER_TYPE = {"market": "MARKET", "limit": "LIMIT", "stop": "STOPMARKET"}
+
+# MNQ futures contract NT8 ATI needs for the OIF INSTRUMENT field -- NT8
+# rejects the generic root symbol outright (confirmed live: subscribing to
+# market data for bare "MNQ" failed with "Symbol is inaccessible" /
+# "UnknownSymbol", which then self-rejected the order with "There is no
+# market data available to drive the simulation engine."). risk_guard's
+# own ALLOWED_SYMBOL stays the generic "MNQ" root (that's what "MNQ only,
+# cap of 3 contracts" means for risk purposes) -- this is a separate
+# constant, read only when building the OIF command actually sent to NT8.
+# MNQ rolls quarterly (Mar/Jun/Sep/Dec); update this by hand each roll to
+# match NT8's own display name for the new front-month contract (check
+# NT8's instrument list or chart title -- confirmed format so far:
+# "<ROOT> <MM-YY>", e.g. "MNQ 12-26" for the December 2026 contract).
+NT8_INSTRUMENT = "MNQ 12-26"
 
 
 def build_place_command(order, account=None):
-    """Maps our normalized order onto an OIF PLACE command string. account
-    defaults to the module-level NT8_ACCOUNT_ID, read at call time (not at
-    import time) so tests/callers can reconfigure it after import."""
+    """Maps our normalized order onto an OIF PLACE command string for the
+    order's own entry. account defaults to the module-level NT8_ACCOUNT_ID,
+    read at call time (not at import time) so tests/callers can reconfigure
+    it after import. The OIF INSTRUMENT field is always NT8_INSTRUMENT, the
+    NT8-qualified contract name -- never order["symbol"], which risk_guard
+    checks against the generic "MNQ" root and which NT8 itself rejects as
+    an instrument. limit_price/stop_price here are the entry's own trigger
+    (for a LIMIT or STOP entry), never the position's protective exit
+    prices -- those are bracket legs, built separately by
+    build_bracket_exit_commands."""
     if account is None:
         account = NT8_ACCOUNT_ID
     action = _SIDE_TO_ATI_ACTION.get(order["side"], "BUY")
     order_type = _TYPE_TO_ATI_ORDER_TYPE.get(str(order.get("type", "market")).lower(), "MARKET")
-    stop_price = order.get("stop_price", order.get("stop_loss_stop_price"))
     return oif_writer.build_place_command(
         account=account,
-        instrument=order["symbol"],
+        instrument=NT8_INSTRUMENT,
         action=action,
         qty=int(order["qty"]),
         order_type=order_type,
         limit_price=order.get("limit_price"),
-        stop_price=stop_price,
+        stop_price=order.get("stop_price"),
     )
+
+
+def build_bracket_exit_commands(order, account=None):
+    """Builds the OIF PLACE commands for an order's protective exit legs:
+    a stop-loss (STOPMARKET) at stop_loss_stop_price and/or a take-profit
+    (LIMIT) at take_profit_limit_price, both on the side opposite the
+    entry, same qty, instrument NT8_INSTRUMENT (see build_place_command).
+    When both are present they share one OCO group id so a fill on either
+    leg cancels the other -- NT8 enforces that linkage; this code only
+    assigns matching group ids. Returns [] when the order carries neither
+    price (no bracket requested)."""
+    if account is None:
+        account = NT8_ACCOUNT_ID
+    stop_price = order.get("stop_loss_stop_price")
+    target_price = order.get("take_profit_limit_price")
+    if stop_price is None and target_price is None:
+        return []
+    exit_side = _OPPOSITE_SIDE.get(order["side"])
+    if exit_side is None:
+        return []
+    exit_action = _SIDE_TO_ATI_ACTION[exit_side]
+    qty = int(order["qty"])
+    oco = "OCO-%s" % uuid.uuid4().hex[:8] if stop_price is not None and target_price is not None else None
+    commands = []
+    if stop_price is not None:
+        commands.append(oif_writer.build_place_command(
+            account=account, instrument=NT8_INSTRUMENT, action=exit_action,
+            qty=qty, order_type="STOPMARKET", stop_price=stop_price, oco=oco,
+        ))
+    if target_price is not None:
+        commands.append(oif_writer.build_place_command(
+            account=account, instrument=NT8_INSTRUMENT, action=exit_action,
+            qty=qty, order_type="LIMIT", limit_price=target_price, oco=oco,
+        ))
+    return commands
 
 
 def process_order(raw_order):
     """Normalizes, risk-checks, and -- only on a pass -- places one order
-    via the NT8 ATI OIF writer. Always logs the decision, pass or reject,
-    with its reason."""
+    (plus its stop-loss/take-profit exit legs, if any) via the NT8 ATI OIF
+    writer. Always logs the decision, pass or reject, with its reason; logs
+    one fill record per OIF command actually written."""
     order = normalize_order(raw_order)
     if order is None:
         decision = risk_guard.Decision(False, "order record could not be normalized (missing/malformed fields)")
@@ -182,13 +242,15 @@ def process_order(raw_order):
     if not decision.allow:
         return decision
 
-    command = build_place_command(order)
-    try:
-        path = oif_writer.write_command(NT8_INCOMING_DIR, command)
-    except OSError as exc:
-        log_decision(order, risk_guard.Decision(False, "order placement failed: %s" % exc))
-        raise
-    log_fill({"order": order, "command": command, "oif_path": path, "status": "sent"})
+    commands = [build_place_command(order)]
+    commands.extend(build_bracket_exit_commands(order))
+    for command in commands:
+        try:
+            path = oif_writer.write_command(NT8_INCOMING_DIR, command)
+        except OSError as exc:
+            log_decision(order, risk_guard.Decision(False, "order placement failed: %s" % exc))
+            raise
+        log_fill({"order": order, "command": command, "oif_path": path, "status": "sent"})
     return decision
 
 

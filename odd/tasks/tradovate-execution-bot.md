@@ -168,3 +168,57 @@ no remote-execution tool will be set up; the user operates the VPS
 manually via RDP. Also not yet done: verifying the NinjaScript AddOn's
 actual runtime behavior (day-rollover correctness in particular) against a
 real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
+- 2026-11-10: Discovered `process_order` only ever sent a single OIF PLACE
+  command for the entry -- `stop_loss_stop_price`/`take_profit_limit_price`
+  normalized onto the order but were never read anywhere, so no stop-loss
+  or take-profit was ever actually attached in NT8. Implemented test-first:
+  `build_bracket_exit_commands` builds the stop (STOP) and/or target
+  (LIMIT) OIF commands on the side opposite the entry, same qty, sharing
+  one OCO group id (`OCO-<uuid8>`) when both legs are present so a fill on
+  either cancels the other in NT8; returns `[]` when the order carries
+  neither price. `process_order` now writes the entry command plus
+  whatever `build_bracket_exit_commands` returns, logging one fill record
+  per OIF file. Also fixed a latent bug while here: the entry's own
+  `stop_price` (for a STOP-type entry trigger) previously fell back to
+  `stop_loss_stop_price`, conflating an entry trigger with a position's
+  protective exit price -- removed that fallback. `python -m pytest
+  tests/tradovate_bot/ -v` → 73 passed (4 new bracket tests + all 69
+  pre-existing, including the single-command-when-no-bracket-prices cases,
+  unchanged). Not yet done: this is unverified against a real NT8 instance
+  -- in particular, whether NT8 ATI's OCO field actually links two
+  separately-submitted PLACE commands by a client-supplied id the way this
+  code assumes, versus requiring NT8's own order id from a prior
+  confirmation. Needs a real Sim101 test before being trusted for an
+  OCO-bracketed order on the funded account.
+- 2026-11-10: Live-tested a real BUY 3 MNQ bracket order against Sim101.
+  `oif_writer.write_command`'s atomic temp-then-rename approach (both the
+  in-folder and parent-folder variants tried first) turned out incompatible
+  with NT8's ATI watcher -- fixed to write directly to the final filename,
+  no temp file, no rename (see oif_writer.py and test_oif_writer.py). With
+  that fixed, the order actually reached NT8 and surfaced two more real
+  bugs: (1) `"STOP"` is not a valid OIF order-type literal -- NT8 rejected
+  it outright ("holds invalid order type parameter 'STOP'"); fixed to
+  `"STOPMARKET"`. (2) the generic root symbol `"MNQ"` is not a valid NT8
+  instrument -- market data subscription failed ("Symbol is inaccessible"
+  / "UnknownSymbol"), which then self-rejected both submitted orders
+  ("There is no market data available to drive the simulation engine.").
+  Fixed by adding a hardcoded `NT8_INSTRUMENT = "MNQ 12-26"` constant in
+  `executor.py`, used only for the OIF INSTRUMENT field, decoupled from
+  `risk_guard.py`'s `ALLOWED_SYMBOL = "MNQ"` (which stays the generic root
+  for risk-check purposes). User explicitly chose a hardcoded constant
+  (updated by hand each quarterly roll) over an env var or an automatic
+  roll-date calculation, for consistency with risk_guard.py's other
+  constants. Both orders self-rejected cleanly before any fill; the
+  account stayed flat throughout, no cleanup needed. `python -m pytest
+  tests/tradovate_bot/ -v` → 74 passed. Not yet re-tested live after this
+  fix.
+- 2026-11-10: Re-tested live after the `"STOPMARKET"`/`NT8_INSTRUMENT`
+  fix: a BUY 3 `MNQ 12-26` bracket order went through end to end on
+  Sim101 -- entry filled at 27936.75 (`Market position=Long`), stop-loss
+  (`STOPMARKET` 27926.00) and take-profit (`LIMIT` 27976.00) both
+  `Accepted`/`Working`, correctly sharing one NT8-side `Oco='OCO-...'`
+  group. Confirms the client-supplied OCO id question from the first
+  bracket-OCO entry above: NT8 does honor it. **As of this writing there
+  is an open Long 3 `MNQ 12-26` position on Sim101** with that bracket
+  still working -- check `NT8_OUTGOING_DIR`/NT8's own Sim101 position
+  display before assuming flat in a future session.

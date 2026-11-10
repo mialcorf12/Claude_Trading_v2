@@ -65,6 +65,30 @@ def test_write_command_creates_incoming_dir_if_missing(tmp_path):
     assert os.path.isdir(str(incoming))
 
 
+def test_write_command_writes_directly_no_rename(tmp_path, monkeypatch):
+    """Regression test for a second bug, also confirmed against a live NT8
+    instance: staging the temp file outside incoming_dir and renaming the
+    final file in (the previous fix) meant NT8's ATI watcher never reacted
+    at all -- confirmed live by zero log/trace activity for over a minute
+    with ATI enabled (Config.xml IsAtiEnabled=true) and the trace log
+    otherwise live. NT8's watcher reacts to a file created directly inside
+    incoming_dir, not to one that arrives via a rename from outside it.
+    Content is always one short line, so writing directly to the final
+    path is safe here. This locks in that write_command never calls
+    os.replace/os.rename at all."""
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    replace_calls = []
+    monkeypatch.setattr(oif_writer.os, "replace", lambda *a, **k: replace_calls.append((a, k)))
+
+    path = oif_writer.write_command(str(incoming), "PLACE;A;B;BUY;1;MARKET;;;DAY;;;;")
+
+    assert replace_calls == []
+    assert os.path.dirname(path) == str(incoming)
+    with open(path, encoding="utf-8") as fh:
+        assert fh.read().strip() == "PLACE;A;B;BUY;1;MARKET;;;DAY;;;;"
+
+
 def test_tail_outgoing_returns_empty_for_missing_dir(tmp_path):
     records, seen = oif_writer.tail_outgoing(str(tmp_path / "nope"), set())
     assert records == []

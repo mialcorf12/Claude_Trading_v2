@@ -23,6 +23,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(executor, "NT8_INCOMING_DIR", str(tmp_path / "incoming"))
     monkeypatch.setattr(executor, "NT8_OUTGOING_DIR", str(tmp_path / "outgoing"))
     monkeypatch.setattr(executor, "NT8_ACCOUNT_ID", "SIM101")
+    monkeypatch.setattr(executor, "NT8_INSTRUMENT", "MNQ 12-26")
     yield tmp_path
 
 
@@ -68,7 +69,7 @@ def test_normalize_order_rejects_missing_fields():
 def test_build_place_command_maps_order_onto_oif_grammar():
     order = executor.normalize_order({"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market"})
     command = executor.build_place_command(order, account="SIM101")
-    assert command == "PLACE;SIM101;MNQ;BUY;2;MARKET;;;DAY;;;;"
+    assert command == "PLACE;SIM101;MNQ 12-26;BUY;2;MARKET;;;DAY;;;;"
 
 
 def test_process_order_rejects_when_normalization_fails(isolated_state, monkeypatch):
@@ -124,7 +125,7 @@ def test_process_order_places_order_when_all_checks_pass(isolated_state, monkeyp
     write_command.assert_called_once()
     incoming_dir_arg, command_arg = write_command.call_args[0]
     assert incoming_dir_arg == executor.NT8_INCOMING_DIR
-    assert command_arg == "PLACE;SIM101;MNQ;BUY;2;MARKET;;;DAY;;;;"
+    assert command_arg == "PLACE;SIM101;MNQ 12-26;BUY;2;MARKET;;;DAY;;;;"
 
     decisions = _read_jsonl(executor.DECISIONS_LOG)
     fills = _read_jsonl(executor.FILLS_LOG)
@@ -201,3 +202,63 @@ def test_poll_outgoing_once_logs_fills_and_advances_seen_files(isolated_state, m
     seen_again = executor.poll_outgoing_once(seen)
     fills_again = _read_jsonl(executor.FILLS_LOG)
     assert len(fills_again) == 1  # no re-logging of the same file
+
+
+def test_build_bracket_exit_commands_returns_empty_when_no_exit_prices():
+    order = executor.normalize_order({"symbol": "MNQ", "side": "sell", "qty": 3, "type": "market"})
+    assert executor.build_bracket_exit_commands(order, account="SIM101") == []
+
+
+def test_build_bracket_exit_commands_builds_stop_and_target_with_shared_oco():
+    order = executor.normalize_order({
+        "symbol": "MNQ", "side": "sell", "qty": 3, "type": "market",
+        "stop_loss_stop_price": 27990.0, "take_profit_limit_price": 27850.0,
+    })
+    commands = executor.build_bracket_exit_commands(order, account="SIM101")
+
+    assert len(commands) == 2
+    stop_cmd, target_cmd = commands
+    stop_fields = stop_cmd.split(";")
+    target_fields = target_cmd.split(";")
+    assert stop_fields[0:6] == ["PLACE", "SIM101", "MNQ 12-26", "BUY", "3", "STOPMARKET"]
+    assert stop_fields[7] == "27990.0"  # stop price field
+    assert target_fields[0:6] == ["PLACE", "SIM101", "MNQ 12-26", "BUY", "3", "LIMIT"]
+    assert target_fields[6] == "27850.0"  # limit price field
+    assert stop_fields[9] == target_fields[9]  # shared OCO id
+    assert stop_fields[9] != ""
+
+
+def test_build_bracket_exit_commands_builds_only_stop_when_target_missing():
+    order = executor.normalize_order({
+        "symbol": "MNQ", "side": "buy", "qty": 2, "type": "market",
+        "stop_loss_stop_price": 27500.0,
+    })
+    commands = executor.build_bracket_exit_commands(order, account="SIM101")
+
+    assert len(commands) == 1
+    fields = commands[0].split(";")
+    assert fields[0:6] == ["PLACE", "SIM101", "MNQ 12-26", "SELL", "2", "STOPMARKET"]
+    assert fields[9] == ""  # no OCO when there's only one exit leg
+
+
+def test_process_order_places_entry_and_bracket_legs_when_prices_present(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    raw_order = {
+        "symbol": "MNQ", "side": "sell", "qty": 3, "type": "market",
+        "stop_loss_stop_price": 27990.0, "take_profit_limit_price": 27850.0,
+    }
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is True
+    assert write_command.call_count == 3
+    sent_commands = [call.args[1] for call in write_command.call_args_list]
+    assert sent_commands[0].split(";")[0:6] == ["PLACE", "SIM101", "MNQ 12-26", "SELL", "3", "MARKET"]
+    assert sent_commands[1].split(";")[0:6] == ["PLACE", "SIM101", "MNQ 12-26", "BUY", "3", "STOPMARKET"]
+    assert sent_commands[2].split(";")[0:6] == ["PLACE", "SIM101", "MNQ 12-26", "BUY", "3", "LIMIT"]
+
+    fills = _read_jsonl(executor.FILLS_LOG)
+    assert len(fills) == 3
+    assert all(f["status"] == "sent" for f in fills)

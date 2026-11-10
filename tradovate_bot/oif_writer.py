@@ -70,18 +70,31 @@ def build_closeposition_command(account, instrument):
 
 
 def write_command(incoming_dir, command_text):
-    """Writes command_text into incoming_dir as a new oif*.txt file, using a
-    temp-write-then-atomic-rename so NT8 never observes a partially written
-    file. Returns the final path written."""
+    """Writes command_text into incoming_dir as a new oif*.txt file.
+
+    Writes directly to the final filename with a single open+write+close --
+    no temp file, no rename. Confirmed live against a real NT8 instance,
+    twice, in opposite directions: (1) staging a temp file *inside*
+    incoming_dir triggered NT8's watcher instantly on the temp file itself
+    ("Unknown OIF file type"), before a rename could complete; (2) staging
+    it *outside* incoming_dir and renaming the final file in meant NT8's
+    watcher never reacted at all -- confirmed by zero log/trace activity
+    for over a minute, with ATI enabled and the trace log otherwise live.
+    NT8's watcher reacts to a file created directly inside incoming_dir,
+    not to one that arrives via rename-in from elsewhere. OIF commands are
+    always a single short line (well under 100 bytes), so a direct
+    write()+close() carries negligible risk of NT8 reading a partial file
+    -- and it is the only one of the three approaches tried that NT8
+    actually reacts to.
+
+    Returns the final path written."""
     os.makedirs(incoming_dir, exist_ok=True)
     unique = "%d_%s" % (time.time_ns(), uuid.uuid4().hex[:8])
     final_path = os.path.join(incoming_dir, "oif_%s.txt" % unique)
-    temp_path = os.path.join(incoming_dir, ".oif_%s.txt.tmp" % unique)
-    with open(temp_path, "w", encoding="utf-8", newline="") as fh:
+    with open(final_path, "w", encoding="utf-8", newline="") as fh:
         fh.write(command_text)
         if not command_text.endswith("\n"):
             fh.write("\n")
-    os.replace(temp_path, final_path)
     return final_path
 
 
