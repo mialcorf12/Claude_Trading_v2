@@ -761,3 +761,72 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   shared semantics used elsewhere for continuous fill-logging).
   Telemetry: 347.00 (up from 343.50, the small net gain from the
   premature close). Account Flat.
+  **Progress-log gap, cycles 27-37 (2026-11-10, ~14:38-17:38 ET) --
+  reconstructed summary**: these cycles' detailed notes were lost when
+  something outside this session checked out `main` and pulled at
+  ~17:27 ET (see incident below) before they were committed -- no
+  code or trading activity was lost, only this doc's prose for that
+  window, now summarized from the session's own chat history.
+  Cycle 26 (14:38): chop near highs, skipped. Cycle 27 (14:53): clean
+  breakout to 27775, BUY filled 27771.00, TP hit 27787.75 later for
+  +$100.50 (telemetry to 442.50-ish range). Cycle 28 (15:08): position
+  closed via STOP at 27737.75 (~-$199.50, designed risk); fresh cycle
+  chopped near 27700-27790, skipped. Cycle 29 (15:23): clean breakout
+  to 27814.25, BUY filled 27806.00, TP hit 27822.75 (+$100.50).
+  Cycle 30 (15:38): pullback continuation, BUY filled 27784.00, TP hit
+  27800.75 (+$100.50; telemetry reached 348.50). Cycle 31 (15:53):
+  strong fresh breakout (27881) with zero pullback and only ~7 min to
+  the 16:00 close -- skipped per the chase/close-proximity rules.
+  Cycle 32 (16:08): first cycle past the 16:00 ET close; flat, no
+  position to flatten, trading-hours gate correctly produced no
+  activity. Cycles 33-37 (16:23-17:23): flat, unchanged, still outside
+  trading hours each time -- no orders attempted, confirming the gate
+  held the whole closed window.
+  **Incident (2026-11-10, ~17:27 ET): working directory branch was
+  switched out from under this session.** Something outside this
+  session (likely the user via RDP) ran `git checkout main` then
+  `git pull --tags origin main` on this same working directory at
+  17:26:58-17:27:17 ET, landing on a PR merge (`fe45539`) that only
+  included feature-branch history up to an earlier commit
+  (`8b6cfc0`) -- missing the three fixes made later this session:
+  `ba16113` (fill-driven bracket), `db35d82` (trading-hours gate), and
+  `97775cd` (outgoing-file re-read fix). Discovered when this cycle's
+  routine position check noticed the task doc's tail looked stale;
+  confirmed via `git log`/`git reflog` and a grep for
+  `check_trading_hours` in the live `risk_guard.py` (zero matches).
+  No live trade was placed with the reverted code -- account was Flat
+  and outside trading hours at the time, so the gap was caught before
+  it mattered. Paused the cron (`195cc97c`) immediately as a
+  precaution. feature/tradovate-oif-execution still had all 3 commits
+  intact (3 ahead of what got merged). Per user's explicit choice,
+  merged feature/tradovate-oif-execution into main (stashing and
+  reapplying the uncommitted CONSISTENCY_PCT=2.00 change around the
+  merge to avoid a conflict) -- clean merge, no conflicts
+  (`c11b218`). Verified all 3 fixes present post-merge and
+  tests green (97/99, same 2 known CONSISTENCY_PCT mismatches).
+  Rescheduled the cron as `074cf349` (same 15-min cadence), with an
+  added step 8 instructing future cycles to sanity-check the branch
+  and the trading-hours gate's presence before trusting the code,
+  given this already happened once. `main` pushed to `origin/main`
+  (user request) -- `fe45539..c11b218`, now in sync.
+  Branch `v2.1` created from `main` (user request) and pushed to
+  `origin` with upstream tracking; this session now works on `v2.1`
+  going forward.
+  Cycle (2026-11-10, ~17:52 ET, first cycle on branch v2.1): sanity
+  check per step 8 passed (branch=v2.1, check_trading_hours present).
+  Checked position -- flat, unchanged. Still outside trading hours
+  (~8 min until the 18:00 ET reopen). No order attempted.
+  Cycle (2026-11-10, ~18:07 ET): sanity check passed. Checked
+  position -- flat. Market reopened at 18:00 ET after the expected
+  16:55-18:00 ET data/liquidity gap (consistent with the trading-hours
+  rule). Fresh TradingView data (freshness check passed: last bar
+  18:05 ET, streaming), but only 2 bars (10 min) exist since reopen,
+  with a gap-down from the pre-close level (27902 -> 27859.5) and no
+  real structure yet. Skipped (step 3) -- insufficient fresh
+  post-reopen data to judge momentum confidently. No order attempted.
+  Cycle (2026-11-10, ~18:22 ET): sanity check passed. Checked
+  position -- flat, within trading hours. Fresh TradingView data
+  (freshness check passed: last bar 18:20 ET, streaming): a clean,
+  steady rally since the 18:00 ET reopen (27859.5 -> 27946, +86.5 pts
+  over 20 min) with no pullback yet. Per the prefer-a-pullback rule,
+  waited rather than chase. Skipped (step 3). No order attempted.

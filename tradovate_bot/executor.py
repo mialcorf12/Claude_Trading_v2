@@ -30,6 +30,7 @@ from tradovate_bot import account_state, oif_writer, risk_guard, time_utils
 STATE_DIR = os.path.join(os.path.dirname(__file__), "state")
 DECISIONS_LOG = os.path.join(STATE_DIR, "decisions.log.jsonl")
 FILLS_LOG = os.path.join(STATE_DIR, "fills.jsonl")
+CYCLE_LOG = os.path.join(STATE_DIR, "cycles.log.jsonl")
 DEFAULT_ORDERS_PATH = os.environ.get("TRADOVATE_ORDERS_PATH", "trader/orders.json")
 POLL_INTERVAL_SECONDS = float(os.environ.get("TRADOVATE_POLL_INTERVAL_SECONDS", "5"))
 
@@ -83,6 +84,35 @@ def log_decision(order, decision, extra=None):
     if extra:
         record.update(extra)
     _append_jsonl(DECISIONS_LOG, record)
+
+
+def log_cycle(cycle_record):
+    """Appends one structured record per overnight trading cycle to
+    CYCLE_LOG, so cycle history can be summarized (win/loss counts, P&L,
+    skip reasons, signal distribution) with jq/pandas instead of parsing
+    `odd/tasks/tradovate-execution-bot.md`'s prose. The cron-driven cycle
+    itself lives in a prompt, not in this module, so this function makes
+    no assumption about the record's shape beyond adding a timestamp --
+    the caller supplies whatever fields apply to that cycle. Recommended
+    fields (all optional, omit what doesn't apply to a given cycle):
+      position: "flat" | "open"
+      within_hours: bool
+      data_fresh: bool
+      signal: "buy" | "sell" | "skip" | "flatten"
+      signal_reason: short free-text summary of the read
+      order: {"side", "qty", "stop_loss_points", "take_profit_points"}
+      risk_guard_allow: bool
+      risk_guard_reason: str
+      outcome: "filled" | "rejected" | "timeout_flatten" | "tp_hit" |
+               "sl_hit" | "skipped" | "outside_hours"
+      fill_price: float
+      pnl: float
+      daily_profit_today: float (from account_telemetry.json)
+      notes: short free-text for anything not covered above
+    """
+    record = {"at": time_utils.now_et_iso()}
+    record.update(cycle_record)
+    _append_jsonl(CYCLE_LOG, record)
 
 
 def log_fill(fill_record):

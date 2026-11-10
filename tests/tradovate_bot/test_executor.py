@@ -25,6 +25,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(executor, "STATE_DIR", str(tmp_path))
     monkeypatch.setattr(executor, "DECISIONS_LOG", str(tmp_path / "decisions.log.jsonl"))
     monkeypatch.setattr(executor, "FILLS_LOG", str(tmp_path / "fills.jsonl"))
+    monkeypatch.setattr(executor, "CYCLE_LOG", str(tmp_path / "cycles.log.jsonl"))
     monkeypatch.setattr(executor, "NT8_INCOMING_DIR", str(tmp_path / "incoming"))
     monkeypatch.setattr(executor, "NT8_OUTGOING_DIR", str(tmp_path / "outgoing"))
     monkeypatch.setattr(executor, "NT8_ACCOUNT_ID", "SIM101")
@@ -444,3 +445,37 @@ def test_process_order_refuses_bracket_when_outgoing_dir_not_configured(isolated
 
     assert decision.allow is False
     write_command.assert_not_called()
+
+
+# ---------------------------------------------------------------- cycle log
+
+def test_log_cycle_appends_record_with_timestamp(isolated_state):
+    executor.log_cycle({"position": "flat", "signal": "skip", "signal_reason": "chop"})
+
+    rows = _read_jsonl(executor.CYCLE_LOG)
+    assert len(rows) == 1
+    assert rows[0]["position"] == "flat"
+    assert rows[0]["signal"] == "skip"
+    assert rows[0]["signal_reason"] == "chop"
+    assert "at" in rows[0]
+
+
+def test_log_cycle_appends_one_line_per_call(isolated_state):
+    executor.log_cycle({"position": "flat", "signal": "skip"})
+    executor.log_cycle({"position": "flat", "signal": "buy", "outcome": "filled", "fill_price": 27784.0})
+
+    rows = _read_jsonl(executor.CYCLE_LOG)
+    assert len(rows) == 2
+    assert rows[1]["signal"] == "buy"
+    assert rows[1]["fill_price"] == 27784.0
+
+
+def test_log_cycle_accepts_a_minimal_partial_record(isolated_state):
+    # log_cycle makes no assumption about shape -- the caller is an LLM-
+    # driven cron prompt, not code, so it must accept whatever a given
+    # cycle actually has (e.g. no order/signal at all for an
+    # outside-hours cycle).
+    executor.log_cycle({"position": "flat", "within_hours": False, "outcome": "outside_hours"})
+
+    rows = _read_jsonl(executor.CYCLE_LOG)
+    assert rows[0]["outcome"] == "outside_hours"
