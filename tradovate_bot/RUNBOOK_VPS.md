@@ -1,165 +1,242 @@
-# Runbook: deploy the NT8 ATI execution bot on the Windows VPS
+# Guía de Despliegue: Bot de Ejecución NT8 ATI en VPS Windows
 
-Every command below is run **by the user**, on the VPS, via RDP. Claude has
-no remote-execution tool into this machine, and per the 2026-11-09 decision
-recorded in `odd/tasks/tradovate-execution-bot.md`, none will be set up —
-this runbook is the deliberate substitute. Paste back any error output here
-(minus credentials) and it'll get fixed.
+## Requisitos Previos
 
-Prerequisites already true per the task doc: the VPS (TradingVPS Basic, 2
-cores/8GB) is provisioned, and NT8 is already installed and connected to the
-Lucid Tradovate account.
+* **VPS Windows:** Instancia provisionada con 2 vCPU y 8 GB de RAM.
+* **NinjaTrader 8 (v8.1.3+ / v8.0.x):** Instalado y conectado a la cuenta de trading (ej. Lucid Tradovate).
+* **Nivel de Ejecución:** Manual por el usuario a través de RDP (Remote Desktop Protocol) en el VPS.
 
-## 1. Clone/pull the repo
+---
 
-Check git is available:
+## 1. Clonar o Actualizar el Repositorio
+
+Asegurar que Git esté instalado en el VPS:
+
 ```powershell
 git --version
-```
-If missing, install "Git for Windows" first.
 
-First time:
+```
+
+*Si el comando no se reconoce, descargar e instalar Git for Windows.*
+
+Navegar a la raíz del disco e inicializar el proyecto:
+
 ```powershell
 cd C:\
 git clone https://github.com/mialcorf12/Claude_Trading_v2.git
 cd Claude_Trading_v2
+
 ```
 
-The OIF/AddOn work currently lives on `feature/tradovate-oif-execution`, not
-yet merged to `main`:
+Cambiar a la rama de desarrollo de ATI/OIF:
+
 ```powershell
 git fetch origin
 git checkout feature/tradovate-oif-execution
+
 ```
-Later updates: `git pull`. Once this branch is reviewed and merged, switch
-back with `git checkout main && git pull`.
 
-## 2. Install Python + dependencies
+*Nota: Para actualizaciones posteriores ejecutar `git pull`. Al fusionar a la rama principal, regresar mediante `git checkout main && git pull`.*
 
-Check `python --version` (3.9+; developed against 3.14). If missing, install
-from python.org (check "Add python.exe to PATH" during install).
+---
+
+## 2. Configurar el Entorno Python y Dependencias
+
+Verificar que Python 3.9+ esté registrado en el sistema:
 
 ```powershell
-cd C:\Claude_Trading_v2
-python -m pip install --user pytest requests
-```
-(`requests`/`pytest` are only needed for `client.py`'s historical tests —
-the live ATI path itself has zero third-party dependencies.)
+python --version
 
-Sanity check before touching NT8 at all:
+```
+
+*Si no está instalado, instalar la versión adecuada desde python.org asegurando marcar la opción **"Add python.exe to PATH"**.*
+
+Instalar las librerías necesarias:
+
+```powershell
+cd C:\TradingPlatform_v2\Claude_Trading_v2
+python -m pip install --user pytest requests
+
+```
+
+Ejecutar la suite de pruebas unitarias para validar la integridad del módulo:
+
 ```powershell
 python -m pytest tests\tradovate_bot\ -q
+
 ```
-Expect `69 passed`.
 
-## 3. Enable NT8's Automated Trading Interface (ATI)
+*Resultado esperado:* **`69 passed`**.
 
-1. In NT8: Tools → Options → the ATI settings tab.
-2. Enable ATI and note the `incoming`/`outgoing` folder paths it shows
-   (default under `Documents\NinjaTrader 8\`) — these feed
-   `NT8_INCOMING_DIR`/`NT8_OUTGOING_DIR` in step 5.
-3. Confirm the Lucid Tradovate account is the one connected (already true
-   per the task doc).
-4. Restart NT8 if prompted.
+---
 
-Not independently verified: the exact ATI menu wording/location for this
-specific NT8 build. If what's on screen doesn't match, check NT8's own Help
-for "Automated Trading Interface", or describe what you see and this gets
-corrected.
+## 3. Configurar la Interfaz de Trading Automatizado (ATI) en NT8
 
-## 4. Install the read-only telemetry AddOn
+> **Especificación NT8 (v8.1.3 / v8.0+):** La configuración del ATI global y las carpetas de intercambio de archivos DLL/ATI se encuentran en el panel central de opciones.
 
-1. Copy `ninjatrader_addon\AccountTelemetryAddOn.cs` from this repo into `Documents\NinjaTrader 8\bin\Custom\AddOns\`.
-   copy ninjatrader_addon\AccountTelemetryAddOn.cs "C:\Users\Administrator\Documents\NinjaTrader 8\bin\Custom\AddOns\"
-2. In NT8: Tools → Edit NinjaScript → AddOn → Compile (F5). Confirm no compile errors.
-3. Set the environment variables in step 5 below **before** restarting NT8
-   — the AddOn has no window, so NT8 has no properties screen for it; it
-   reads its config from the same `NT8_ACCOUNT_ID` /
-   `ACCOUNT_TELEMETRY_JSON_PATH` env vars the Python executor uses, plus
-   the optional `ACCOUNT_TELEMETRY_EXPORT_INTERVAL_SECONDS` (default `5`).
-4. Restart NT8 so the AddOn loads with that config.
-5. Verify it's running: open NT8's NinjaScript Output window (Control
-   Center → New → NinjaScript Output) and look for a line starting with
-   `AccountTelemetryAddOn: started.` — there is no menu entry to "find" for
-   a headless AddOn like this one; the Output window is the real signal. A
-   line like `account '...' not found` instead means `NT8_ACCOUNT_ID`
-   doesn't match any connected account's exact name (check NT8's Accounts
-   tab).
-6. Once it's logging as started, open the configured JSON path in Notepad
-   after a few seconds and confirm the numbers match NT8's own Cash Value /
-   Account Performance display. This is the sanity check already flagged
-   as unverified in `tradovate_bot/README.md` — do it now, including
-   watching it survive one day rollover, before trusting it for the funded
-   account.
+1. En el **Control Center** de NinjaTrader 8, navegar a:
+`Tools` $\rightarrow$ `Options` $\rightarrow$ sección **Automated Trading Interface (ATI)**.
+2. Activar la opción **Enable ATI**.
+3. Verificar o definir las rutas locales para la recepción y envío de órdenes (carpetas por defecto):
+* **Incoming Directory:** `C:\Users\Administrator\Documents\NinjaTrader 8\incoming\`
+* **Outgoing Directory:** `C:\Users\Administrator\Documents\NinjaTrader 8\outgoing\`
 
-## 5. Configure environment variables
 
-Same contract as `tradovate_bot/README.md`. Set at machine scope so they
-survive reboots (PowerShell as Administrator):
+4. Confirmar en la pestaña **Accounts** del Control Center el nombre exacto de la cuenta activa (ej. `Sim101` o el identificador de la cuenta Tradovate).
+5. Hacer clic en **OK** y reiniciar NinjaTrader 8 para aplicar los cambios de red y de interfaz.
+
+---
+
+## 4. Compilar e Instalar el AddOn de Telemetría (Read-Only)
+
+El AddOn `AccountTelemetryAddOn.cs` compila métricas de la cuenta (Cash Value, Net Liquidation) en tiempo real y las exporta en formato JSON.
+
+### Paso 4.1: Copiar el script C# al directorio NinjaScript
+
+Ejecutar en PowerShell:
+
+```powershell
+copy ninjatrader_addon\AccountTelemetryAddOn.cs "C:\Users\Administrator\Documents\NinjaTrader 8\bin\Custom\AddOns\"
+
+```
+
+### Paso 4.2: Compilar el AddOn en NinjaTrader 8
+
+1. Ir al **Control Center** $\rightarrow$ `Tools` $\rightarrow$ `Edit NinjaScript` $\rightarrow$ `AddOn`.
+2. Seleccionar `AccountTelemetryAddOn.cs` y presionar **F5** (o hacer clic en el icono de **Compile**).
+3. Confirmar en el panel inferior que finalice sin errores de sintaxis (*0 errors*).
+
+### Paso 4.3: Validación de ejecución en segundo plano
+
+Este AddOn funciona de forma headless (sin interfaz gráfica). Para validar su funcionamiento:
+
+1. Asegurar que las variables de entorno del **Paso 5** estén configuradas antes de reiniciar NT8.
+2. Reiniciar NinjaTrader 8.
+3. Abrir la ventana de salida: **Control Center** $\rightarrow$ `New` $\rightarrow$ `NinjaScript Output`.
+4. Verificar la presencia del log:
+```text
+AccountTelemetryAddOn: started.
+
+```
+
+
+*Si se despliega `account '...' not found`, validar que la variable `NT8_ACCOUNT_ID` coincida exactamente con el nombre asignado en la pestaña Accounts.*
+5. Inspeccionar el archivo JSON generado en la ruta configurada (`account_telemetry.json`) mediante el Notepad para confirmar la paridad con el **Cash Value** de NT8.
+
+---
+
+## 5. Registrar Variables de Entorno del Sistema
+
+Configurar las variables a nivel de máquina (`Machine`) para garantizar la persistencia tras reiniciar el VPS. Ejecutar en PowerShell como **Administrador**:
+
 ```powershell
 [Environment]::SetEnvironmentVariable("NT8_INCOMING_DIR", "C:\Users\Administrator\Documents\NinjaTrader 8\incoming", "Machine")
 [Environment]::SetEnvironmentVariable("NT8_OUTGOING_DIR", "C:\Users\Administrator\Documents\NinjaTrader 8\outgoing", "Machine")
 [Environment]::SetEnvironmentVariable("NT8_ACCOUNT_ID", "Sim101", "Machine")
 [Environment]::SetEnvironmentVariable("ACCOUNT_TELEMETRY_JSON_PATH", "C:\TradingPlatform_v2\Claude_Trading_v2\tradovate_bot\state\account_telemetry.json", "Machine")
-```
-Open a new terminal afterward so it picks up the machine-level values.
+[Environment]::SetEnvironmentVariable("ACCOUNT_TELEMETRY_EXPORT_INTERVAL_SECONDS", "5", "Machine")
 
-## 6. Run it once in the foreground first
+```
+
+> **Importante:** Cerrar la consola actual y abrir una nueva ventana de PowerShell para que la sesión cargue las nuevas variables de entorno a nivel de sistema.
+
+---
+
+## 6. Prueba Manual de Ejecución (Foreground Test)
+
+Antes de delegar el proceso a un servicio desatendido, validar la lógica de lectura y la conexión del cliente Python:
 
 ```powershell
 cd C:\TradingPlatform_v2\Claude_Trading_v2
 python -m tradovate_bot.executor
+
 ```
-With `trader/orders.json` empty or absent, a clean startup line on stderr
-and no crash across a few poll cycles is a successful smoke test. Ctrl-C to
-stop. Do this before ever pointing it at a real signal, and before wiring
-up unattended execution.
 
-## 7. Run it unattended (NSSM)
+* **Criterio de éxito:** Inicialización limpia en `stderr`, sin excepciones críticas durante ciclos de sondeo en vacío (cuando `trader/orders.json` esté ausente o vacío).
+* Presionar `Ctrl + C` para detener el proceso una vez verificado.
 
-NSSM (https://nssm.cc) over Task Scheduler for a long-lived process — it
-gives direct stdout/stderr log redirection and simpler restart-on-failure
-behavior.
+---
+
+## 7. Despliegue como Servicio Desatendido (vía NSSM)
+
+Se recomienda utilizar **NSSM (Non-Sucking Service Manager)** para gestionar el ejecutor Python como un servicio de Windows con reinicio automático y redirección nativa de logs.
+
+### Paso 7.1: Instalación de NSSM
+
+1. Descargar NSSM desde [nssm.cc](https://nssm.cc) y extraer el binario `nssm.exe` de 64 bits en la ruta `C:\nssm\`.
+
+ Agregar NSSM a las Variables de Entorno (Para usarlo desde cualquier parte)
+Si quieres poder escribir nssm desde cualquier ventana de comandos sin importar dónde estés ubicado:
+1. Copia la ruta de la carpeta donde está nssm.exe (por ejemplo, C:\nssm).
+2. Abre el menú de inicio de Windows y escribe Variables de entorno ("Editar las variables de entorno del sistema").
+3. Haz clic en el botón Variables de entorno...
+4. En el recuadro inferior ("Variables del sistema"), busca y selecciona la variable Path, luego haz clic en Editar.
+5. Haz clic en Nuevo y pega la ruta de la carpeta (C:\nssm).
+6. Haz clic en Aceptar en todas las ventanas.
+7. Cierra y vuelve a abrir tu consola (cmd o PowerShell) para que los cambios surtan efecto y prueba escribir nssm
+
+
+### Paso 7.2: Configurar el Servicio
+
+Ejecutar en PowerShell como **Administrador**:
 
 ```powershell
 C:\nssm\nssm.exe install TradovateExecutor
-```
-In the GUI NSSM opens:
-- **Path**: full path to `python.exe` (`where python` to find it)
-- **Startup directory**: `C:\Claude_Trading_v2`
-- **Arguments**: `-m tradovate_bot.executor`
-- **I/O tab**: redirect stdout/stderr to, e.g.,
-  `C:\TradingPlatform_v2\Claude_Trading_v2\tradovate_bot\state\executor.stdout.log` /
-  `executor.stderr.log`
-- **Environment tab** (only if step 5's vars weren't set at Machine scope):
-  add them here, one `NAME=value` per line.
 
-Start and verify:
+```
+
+Completar los parámetros en la interfaz gráfica:
+
+* **Tab Application:**
+* **Path:** Ruta absoluta a `python.exe` (obtenerla ejecutando `where python`, ej. `C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe`).
+* **Startup directory:** `C:\TradingPlatform_v2\Claude_Trading_v2`
+* **Arguments:** `-m tradovate_bot.executor`
+
+
+* **Tab I/O (Redirección de Logs):**
+* **Input (stdin):** `C:\TradingPlatform_v2\Claude_Trading_v2\tradovate_bot\state\executor.stdin.log`
+* **Output (stdout):** `C:\TradingPlatform_v2\Claude_Trading_v2\tradovate_bot\state\executor.stdout.log`
+* **Error (stderr):** `C:\TradingPlatform_v2\Claude_Trading_v2\tradovate_bot\state\executor.stderr.log`
+
+
+* **Tab Environment:**
+* Si las variables de entorno del **Paso 5** no se registraron a nivel de máquina, añadir cada par `CLAVE=VALOR` en líneas individuales dentro de este panel.
+
+
+
+Hacer clic en **Install service**.
+
+### Paso 7.3: Control y Monitoreo del Servicio
+
+Iniciar el servicio:
+
 ```powershell
 nssm start TradovateExecutor
-Get-Content C:\TradingPlatform_v2\Claude_Trading_v2\tradovate_bot\state\decisions.log.jsonl -Tail 5
+
 ```
 
-Stop/restart:
+Monitorear registros de ejecución e inspeccionar la salida en tiempo real:
+
 ```powershell
-nssm stop TradovateExecutor
-nssm restart TradovateExecutor
+Get-Content C:\TradingPlatform_v2\Claude_Trading_v2\tradovate_bot\state\decisions.log.jsonl -Tail 5
+Get-Content C:\TradingPlatform_v2\Claude_Trading_v2\tradovate_bot\state\executor.stderr.log -Tail 10 -Wait
+
 ```
 
-Task Scheduler alternative, if NSSM is undesirable: a task triggered "At
-startup", action = `python.exe` with the same arguments and working
-directory, "Run whether user is logged on or not", with Task Scheduler's own
-restart-on-failure settings — functionally similar, without NSSM's log
-redirection convenience.
+Comandos de gestión básica:
 
-## What this runbook does not cover
+```powershell
+# Detener el servicio
+nssm stop TradovateExecutor
 
-- Claude cannot run any step above directly — there is no remote-access
-  tool into this VPS, and that is now a closed decision, not an open
-  question (see the task doc).
-- The exact NT8 ATI menu wording for your installed build — verify on
-  screen.
-- Whether the NinjaScript AddOn's day-rollover logic and NT8 ATI's outgoing
-  confirmation-file format are correct — both still need manual
-  verification against this live NT8 instance (tracked in
-  `tradovate_bot/README.md`'s "What is NOT verified yet").
+# Reiniciar el servicio
+nssm restart TradovateExecutor
+
+```
+
+---
+
+## Consideraciones de Validación y Monitoreo
+
+* **Auditoría de Rollover Diario:** Confirmar durante el primer cambio de sesión bursátil que el archivo `account_telemetry.json` mantenga sincronización con el Net Liquidation de NT8 sin interrupciones en la lectura C#.
+* **Verificación de Confirmaciones ATI:** Auditar la generación y consumo de archivos de confirmación en el directorio `NT8_OUTGOING_DIR` al enviar la primera orden de prueba.

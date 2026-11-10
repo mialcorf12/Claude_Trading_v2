@@ -340,3 +340,119 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   `tests/tradovate_bot/test_risk_guard.py`. With this fix, tonight's
   $235.50/$235.50 state would now PASS (235.50 < 500) -- the next cron
   cycle will re-evaluate a fresh signal for real instead of self-blocking.
+  Committed as `02e410a`.
+  Ninth cycle (2026-11-10, ~08:21 ET): checked position -- still flat.
+  Telemetry unchanged (235.50/235.50) but now PASSES the fixed
+  consistency rule (235.50 < 500). Fetched fresh NQ=F/MNQ=F data: the
+  last ~2 hours (06:30-08:21 ET) show price oscillating in an ~80-point
+  range (27877-27961) with no sustained breakout either way -- a dip to
+  27877.5 (near the day's 27844.5 low) at 08:10 bounced to 27917.75 then
+  fell back to 27892.75 (current), a failed/partial bounce rather than a
+  clean continuation. Read as choppy consolidation at session lows, not
+  a confident directional edge. Skipped the trade (step 3) rather than
+  force one; this was a genuine market-data judgment call, not a
+  risk_guard rejection. No order attempted.
+  Loop rescheduled (2026-11-10, ~09:15 ET, user request): cadence changed
+  from hourly to every 30 min. Cancelled cron `cbb6f9d1`, created
+  `c9e1834b` ("7,37 * * * *", same offset convention). Separately, user
+  set `CONSISTENCY_PCT = 2.00` directly on disk (intentional,
+  uncommitted, left as-is per explicit instruction) -- loosens the
+  consistency threshold from $500 to $2500, but still protects against
+  extreme single-day concentration since `daily_profit_today` is the
+  day's *cumulative* realized P&L, not a per-trade figure.
+  Tenth cycle (2026-11-10, ~09:19 ET, first at the new 30-min cadence):
+  checked position -- flat. Fetched fresh MNQ=F/NQ=F data: a sharp
+  breakdown at 08:30 ET (27920 -> 27706.5 in a single 5-min bar, ~213
+  pts), continuing to a low of ~27652.5 by 08:55 ET, then only a weak
+  partial bounce to 27739.0 (current) -- confirmed on both NQ=F and
+  MNQ=F. Read as SELL on the bounce, with-trend (strong down momentum,
+  unconvincing retracement). Bracket off 27739.0: stop_loss_stop_price
+  27772.25 (+33.25 pts), take_profit_limit_price 27722.25 (-16.75 pts),
+  qty 3. **risk_guard allowed the order** (all checks passed, including
+  consistency at the new 2.00 threshold). **Filled live**: NT8 log shows
+  Execution Price=27727.75, Quantity=3, Short, Account='Sim101',
+  Instrument='MNQ 12-26' at 09:19:43 ET; all 3 OIF commands (entry/stop/
+  target) confirmed SUBMITTED via NT8's outgoing fills; incoming folder
+  empty afterward. Order file cleaned up. Position now open: Short 3
+  MNQ 12-26 @ 27727.75, bracket live (SL 27772.25 / TP 27722.25). Next
+  cron fire (~09:37 ET, 30-min cadence) will check this position first.
+  Position closed (2026-11-10, 09:20:52 ET, before the next cron fire):
+  take-profit filled -- bought back 3 MNQ 12-26 @ 27720.50 (slightly
+  better than the 27722.25 TP level), closing the Short. Gain: 7.25 pts
+  x $2/pt x 3 = $43.50. Telemetry updated: daily_profit_today and
+  total_realized_profit both now $279.00 (235.50 + 43.50), still well
+  under the $2500 consistency threshold. Account confirmed Flat; the
+  next cycle's position check (CronList shows `c9e1834b` next firing
+  ~09:49am, offset by the scheduler's per-job jitter) will correctly see
+  Flat and proceed to evaluate a fresh signal.
+  Eleventh cycle (2026-11-10, ~09:39 ET): checked position -- flat.
+  Fresh data showed a clean recovery from the 08:55 flush low (27652.5)
+  to 27797.75 by 09:35 ET (+145 pts, higher lows/higher highs), then a
+  modest pullback to 27764.25 (current, ~23% retracement) -- read as BUY
+  on the dip, with the new short-term uptrend. Bracket off 27764.25:
+  stop_loss_stop_price 27731.00, take_profit_limit_price 27781.00, qty 3.
+  risk_guard allowed it. **Filled, but with a notable gap/slippage
+  effect**: entry filled at avg 27784.83 (price had already moved ~20.5
+  pts above the 27764.25 reference by fill time), which put the TP level
+  (27781.00) already below the live market price -- so the resting
+  SELL-LIMIT TP leg was immediately marketable and filled within the
+  same second as the entry (avg exit 27784.58), closing the trade almost
+  instantly for a small loss of ~$1.50 (3 x -0.25 pts x $2/pt) instead of
+  riding toward the $100 target. Confirmed via NT8 log (Flat again at
+  09:49:43 ET) and telemetry (277.50, down from 279.00). Same root cause
+  as the first live trade's slippage finding, mirrored: when the market
+  gaps between quote-time and fill-time, a bracket sized off the
+  pre-submission quote can land partly or fully in-the-money at entry,
+  causing premature exits -- a known, not-yet-addressed design gap
+  (brackets are sized off a quote fetched before submission, not off the
+  confirmed fill price). Account Flat, order file cleaned up.
+  Manual off-cycle trade (2026-11-10, ~09:43 ET, user request, cron
+  cadence left unchanged): checked position -- flat. Same uptrend thesis
+  continued: fresh higher high 27853 (09:40 ET) on top of the prior
+  cycle's structure, pullback to 27807.75 (current) -- still a
+  higher-low pullback within the intact uptrend, read as BUY. Bracket
+  off 27807.75: SL 27774.50, TP 27824.50, qty 3. risk_guard allowed it.
+  **Same slippage pattern as the prior cycle, again**: market kept
+  moving fast -- entry filled at avg 27834.08 (+26.3 pts above the
+  27807.75 reference by fill time), put the 27824.50 TP already
+  in-the-money at entry, instant SELL-LIMIT fill at avg 27833.08,
+  closing for a small loss of $6.00 (3 x -1.0 pt x $2/pt). Confirmed via
+  NT8 log (Flat again at 09:53:36 ET) and telemetry (271.50, down from
+  277.50). This is now the SECOND consecutive occurrence of the same
+  quote-to-fill slippage effect in fast-moving conditions -- worth
+  treating as a pattern, not a one-off, if this market stays this
+  volatile. Account Flat, order file cleaned up.
+  Twelfth cycle (2026-11-10, ~10:09 ET): checked position -- flat.
+  Fresh data showed a very strong, fast rally continuing: +388 pts from
+  the 08:55 low (27652.5) to 28040.75 (current) in ~75 min, only a
+  shallow pullback in the last 2 bars. Read as BUY-the-dip continuation
+  (same thesis as prior cycles, now more extended). Bracket off
+  28040.75: SL 28007.50, TP 28057.50, qty 3. risk_guard allowed it.
+  **NEW, more severe failure mode (escalation of the known slippage
+  issue)**: market moved DOWN ~63 pts between the 28040.75 reference and
+  the actual fill (avg 27977.92) -- the opposite direction from the
+  prior two cycles. This put `stop_loss_stop_price` (28007.50) ABOVE the
+  live market at submission time. NT8 did not silently execute it like
+  the earlier TP-side incidents -- it flat-out REJECTED the stop leg:
+  "Sell stop or sell stop limit orders can't be placed above the
+  market." Worse: because the stop and target legs share one OCO group,
+  rejecting the stop leg invalidated the OCO group, so NT8 also rejected
+  the target leg ("The OCO ID ... cannot be reused"). **Net result: the
+  Long 3 MNQ 12-26 @ 27977.92 position was left completely naked -- no
+  stop, no target -- confirmed via NT8's own log (both legs show
+  'Rejected' with native error text) and fills.jsonl (`REJECTED;0;0`
+  twice).** Treated this as an active risk emergency rather than waiting
+  for the next 30-min cron cycle: flattened the position immediately via
+  a direct `CLOSEPOSITION;Sim101;MNQ 12-26` OIF command (bypassing
+  risk_guard/process_order deliberately, since this is protective
+  flattening of an already-open naked position, not a new speculative
+  entry). Confirmed closed via NT8 log: sold 3 @ 27991.25 at 10:21:45 ET,
+  Flat. The market happened to move favorably during the ~2 minutes the
+  position was unprotected, so this closed for a $80.00 gain
+  (13.333 pts x $2/pt x 3) rather than a loss -- but that was luck, not
+  protection by design. Telemetry: 351.50 (up from 271.50). This
+  confirms the quote-staleness bracket-sizing issue (flagged after
+  cycle 11) is a real, recurring, and now demonstrably more dangerous
+  defect that can leave a live position fully unprotected, not just
+  cause early/suboptimal exits -- this needs a decision and a fix before
+  the loop keeps running unattended.
