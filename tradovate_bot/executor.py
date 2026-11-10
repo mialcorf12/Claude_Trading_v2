@@ -23,6 +23,7 @@ import os
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 
 from tradovate_bot import account_state, oif_writer, risk_guard, time_utils
 
@@ -48,6 +49,15 @@ ACCOUNT_TELEMETRY_JSON_PATH = os.environ.get("ACCOUNT_TELEMETRY_JSON_PATH", "")
 ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS = float(
     os.environ.get("ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS", "30")
 )
+
+# How long to wait for NT8's own fill confirmation before giving up (see
+# wait_for_entry_fill). A bracket is only ever sized from this CONFIRMED
+# fill price, never from a quote fetched before submission -- see
+# odd/tasks/tradovate-execution-bot.md, 2026-11-10: a bracket sized off a
+# pre-submission quote repeatedly landed on the wrong side of a fast-moving
+# market, causing premature exits and, once, a fully rejected/naked bracket.
+FILL_CONFIRMATION_TIMEOUT_SECONDS = float(os.environ.get("TRADOVATE_FILL_TIMEOUT_SECONDS", "5"))
+FILL_CONFIRMATION_POLL_INTERVAL_SECONDS = float(os.environ.get("TRADOVATE_FILL_POLL_INTERVAL_SECONDS", "0.5"))
 
 
 def _ensure_state_dir():
@@ -98,9 +108,16 @@ def load_orders(path):
 
 def normalize_order(raw_order):
     """Maps a trader-broker-shaped order record onto the fields risk_guard
-    and the OIF writer need: symbol, side, qty, type, plus optional
-    stop/target prices. Returns None if the record can't be normalized --
-    callers must treat that as a reject, never a pass."""
+    and the OIF writer need: symbol, side, qty, type, plus optional entry
+    trigger prices and bracket point-distances. Returns None if the record
+    can't be normalized -- callers must treat that as a reject, never a
+    pass.
+
+    stop_loss_points/take_profit_points are distances in price points, NOT
+    absolute prices -- process_order computes the actual bracket prices
+    from the CONFIRMED fill (see compute_bracket_prices_from_fill), since
+    an absolute price supplied here would necessarily be based on a quote
+    fetched before the order is even submitted."""
     if not isinstance(raw_order, dict):
         return None
     symbol = raw_order.get("symbol")
@@ -119,7 +136,7 @@ def normalize_order(raw_order):
         "qty": qty_num,
         "type": order_type,
     }
-    for key in ("stop_price", "stop_loss_stop_price", "target_price", "take_profit_limit_price", "limit_price"):
+    for key in ("stop_price", "limit_price", "stop_loss_points", "take_profit_points"):
         if raw_order.get(key) is not None:
             normalized[key] = raw_order[key]
     return normalized
@@ -189,19 +206,21 @@ def build_place_command(order, account=None):
     )
 
 
-def build_bracket_exit_commands(order, account=None):
+def build_bracket_exit_commands(order, stop_price, target_price, account=None):
     """Builds the OIF PLACE commands for an order's protective exit legs:
-    a stop-loss (STOPMARKET) at stop_loss_stop_price and/or a take-profit
-    (LIMIT) at take_profit_limit_price, both on the side opposite the
-    entry, same qty, instrument NT8_INSTRUMENT (see build_place_command).
-    When both are present they share one OCO group id so a fill on either
-    leg cancels the other -- NT8 enforces that linkage; this code only
-    assigns matching group ids. Returns [] when the order carries neither
-    price (no bracket requested)."""
+    a stop-loss (STOPMARKET) at stop_price and/or a take-profit (LIMIT) at
+    target_price, both on the side opposite the entry, same qty,
+    instrument NT8_INSTRUMENT (see build_place_command). When both are
+    present they share one OCO group id so a fill on either leg cancels
+    the other -- NT8 enforces that linkage; this code only assigns
+    matching group ids. Returns [] when neither price is given (no
+    bracket requested).
+
+    stop_price/target_price must already be absolute, tick-rounded prices
+    derived from the CONFIRMED fill -- see compute_bracket_prices_from_fill.
+    This function does no price derivation of its own."""
     if account is None:
         account = NT8_ACCOUNT_ID
-    stop_price = order.get("stop_loss_stop_price")
-    target_price = order.get("take_profit_limit_price")
     if stop_price is None and target_price is None:
         return []
     exit_side = _OPPOSITE_SIDE.get(order["side"])
@@ -224,11 +243,103 @@ def build_bracket_exit_commands(order, account=None):
     return commands
 
 
+_TICK_SIZE = 0.25
+
+
+def _round_to_tick(price):
+    return round(price / _TICK_SIZE) * _TICK_SIZE
+
+
+def compute_bracket_prices_from_fill(order, fill_price):
+    """Computes tick-rounded absolute stop/target prices from the order's
+    requested point distances and the CONFIRMED fill price -- never from a
+    quote fetched before submission. Returns (stop_price, target_price);
+    either is None if its point distance wasn't requested on the order."""
+    stop_points = order.get("stop_loss_points")
+    target_points = order.get("take_profit_points")
+    sign = {"buy": 1, "sell": -1}.get(order.get("side"))
+    if sign is None:
+        return None, None
+    stop_price = _round_to_tick(fill_price - sign * stop_points) if stop_points is not None else None
+    target_price = _round_to_tick(fill_price + sign * target_points) if target_points is not None else None
+    return stop_price, target_price
+
+
+@dataclass(frozen=True)
+class FillResult:
+    status: str  # "filled", "rejected", or "timeout"
+    price: float = None
+
+
+_TERMINAL_OUTGOING_STATUSES = {"FILLED", "REJECTED", "CANCELLED"}
+
+
+def wait_for_entry_fill(seen_files, timeout_seconds=None, poll_interval_seconds=None):
+    """Polls NT8's outgoing folder for the entry order's own confirmation,
+    logging every new record seen (same as poll_outgoing_once). Returns a
+    FillResult as soon as a FILLED or REJECTED record appears, or "timeout"
+    once timeout_seconds has elapsed with neither. seen_files should be a
+    snapshot of the outgoing folder taken immediately before the entry
+    command was written, so only records that appear afterward are seen.
+
+    NT8 rewrites the SAME outgoing filename in place as an order's status
+    progresses (e.g. SUBMITTED -> FILLED) rather than writing a new file
+    per status (confirmed live, 2026-11-10: a poll that caught a file
+    while still SUBMITTED, with oif_writer.tail_outgoing's normal
+    "new filenames only" exclusion, then never saw that same file's later
+    rewrite to FILLED -- timing out and defensively flattening a position
+    that had, in fact, already filled). So a filename is only treated as
+    permanently seen once it reaches a terminal status; anything else is
+    re-read on the next poll."""
+    if timeout_seconds is None:
+        timeout_seconds = FILL_CONFIRMATION_TIMEOUT_SECONDS
+    if poll_interval_seconds is None:
+        poll_interval_seconds = FILL_CONFIRMATION_POLL_INTERVAL_SECONDS
+    seen = set(seen_files)
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        records, polled_seen = oif_writer.tail_outgoing(NT8_OUTGOING_DIR, seen)
+        for record in records:
+            log_fill({"source": "nt8_outgoing", "record": record})
+            raw_fields = record.get("raw_fields") or []
+            status = raw_fields[0] if raw_fields else None
+            if status == "FILLED":
+                try:
+                    price = float(raw_fields[2])
+                except (IndexError, ValueError):
+                    price = None
+                if price is not None:
+                    return FillResult("filled", price)
+            elif status == "REJECTED":
+                return FillResult("rejected")
+            if status not in _TERMINAL_OUTGOING_STATUSES:
+                polled_seen.discard(record.get("filename"))
+        seen = polled_seen
+        if time.monotonic() >= deadline:
+            return FillResult("timeout")
+        time.sleep(poll_interval_seconds)
+
+
+def _snapshot_outgoing_files():
+    if not NT8_OUTGOING_DIR or not os.path.isdir(NT8_OUTGOING_DIR):
+        return set()
+    return set(os.listdir(NT8_OUTGOING_DIR))
+
+
 def process_order(raw_order):
     """Normalizes, risk-checks, and -- only on a pass -- places one order
-    (plus its stop-loss/take-profit exit legs, if any) via the NT8 ATI OIF
-    writer. Always logs the decision, pass or reject, with its reason; logs
-    one fill record per OIF command actually written."""
+    via the NT8 ATI OIF writer. Always logs the decision, pass or reject,
+    with its reason.
+
+    When the order requests a bracket (stop_loss_points/take_profit_points),
+    the entry is placed alone first, then this waits for NT8's own fill
+    confirmation and sizes the stop/target from that CONFIRMED price --
+    never from a quote fetched before submission (see
+    compute_bracket_prices_from_fill's docstring for why). If NT8 rejects
+    the entry, no bracket is placed (there is nothing to protect). If fill
+    confirmation doesn't arrive within FILL_CONFIRMATION_TIMEOUT_SECONDS,
+    this defensively flattens via CLOSEPOSITION rather than risk leaving a
+    possibly-open position with no stop and no target."""
     order = normalize_order(raw_order)
     if order is None:
         decision = risk_guard.Decision(False, "order record could not be normalized (missing/malformed fields)")
@@ -236,21 +347,59 @@ def process_order(raw_order):
         return decision
 
     account_state_dict = fetch_account_state()
-    decision = risk_guard.evaluate_order(order, account_state_dict)
+    decision = risk_guard.evaluate_order(order, account_state_dict, time_utils.now_et())
     log_decision(order, decision, extra={"account_state": account_state_dict})
 
     if not decision.allow:
         return decision
 
-    commands = [build_place_command(order)]
-    commands.extend(build_bracket_exit_commands(order))
-    for command in commands:
+    wants_bracket = order.get("stop_loss_points") is not None or order.get("take_profit_points") is not None
+
+    if wants_bracket and not NT8_OUTGOING_DIR:
+        refusal = risk_guard.Decision(
+            False,
+            "bracket requested (stop_loss_points/take_profit_points) but NT8_OUTGOING_DIR is not "
+            "configured, so the real fill price can never be confirmed; refusing to place an entry "
+            "this bot could not safely protect",
+        )
+        log_decision(order, refusal)
+        return refusal
+
+    seen_before = _snapshot_outgoing_files() if wants_bracket else None
+    entry_command = build_place_command(order)
+    try:
+        path = oif_writer.write_command(NT8_INCOMING_DIR, entry_command)
+    except OSError as exc:
+        log_decision(order, risk_guard.Decision(False, "order placement failed: %s" % exc))
+        raise
+    log_fill({"order": order, "command": entry_command, "oif_path": path, "status": "sent"})
+
+    if not wants_bracket:
+        return decision
+
+    fill = wait_for_entry_fill(seen_before)
+
+    if fill.status == "rejected":
+        log_fill({"order": order, "status": "entry_rejected_by_nt8"})
+        return decision
+
+    if fill.status != "filled":
+        close_command = oif_writer.build_closeposition_command(account=NT8_ACCOUNT_ID, instrument=NT8_INSTRUMENT)
+        close_path = oif_writer.write_command(NT8_INCOMING_DIR, close_command)
+        log_fill({
+            "order": order, "command": close_command, "oif_path": close_path,
+            "status": "defensive_flatten_fill_confirmation_timeout",
+        })
+        return decision
+
+    stop_price, target_price = compute_bracket_prices_from_fill(order, fill.price)
+    for command in build_bracket_exit_commands(order, stop_price, target_price):
         try:
-            path = oif_writer.write_command(NT8_INCOMING_DIR, command)
+            exit_path = oif_writer.write_command(NT8_INCOMING_DIR, command)
         except OSError as exc:
-            log_decision(order, risk_guard.Decision(False, "order placement failed: %s" % exc))
+            log_decision(order, risk_guard.Decision(False, "bracket placement failed: %s" % exc))
             raise
-        log_fill({"order": order, "command": command, "oif_path": path, "status": "sent"})
+        log_fill({"order": order, "command": command, "oif_path": exit_path, "status": "sent", "fill_price": fill.price})
     return decision
 
 

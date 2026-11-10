@@ -456,3 +456,308 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   defect that can leave a live position fully unprotected, not just
   cause early/suboptimal exits -- this needs a decision and a fix before
   the loop keeps running unattended.
+  User asked to validate Option 3 (ATM Strategy via executor.py). Checked
+  the repo: the OIF grammar's `[STRATEGY]`/`[STRATEGY ID]` fields exist
+  but their actual semantics were never documented or verified here --
+  no evidence they invoke an ATM Strategy template. From general
+  NinjaTrader knowledge (not verified in this session): ATM Strategies
+  are normally invoked via the NinjaScript `AtmStrategyCreate` API or
+  interactively, a different transport than the OIF/ATI file-drop
+  interface already working tonight. Told the user Option 3 likely
+  needs that separate API, not a tweak to the current OIF transport, and
+  recommended verifying against NT8's official docs or a live test
+  before committing to it. No code changed.
+  Thirteenth cycle (2026-11-10, ~10:39 ET): checked position -- flat
+  (confirmed closed from the prior incident). Fresh data: clear reversal
+  since the 10:00 ET top (28048.5) -- lower highs/lower lows down to
+  27870.0 (10:35 ET), bounce to 27890.75 (current). Read as SELL on the
+  bounce, continuing the pullback. Bracket off 27890.75: SL 27924.00, TP
+  27874.00, qty 3. risk_guard allowed it. Watched very carefully for any
+  leg rejection this time (per the near-miss two cycles ago). **No
+  rejection**, but the **same quote-staleness pattern recurred for a
+  4th time**: market gapped ~116 pts further down between the 27890.75
+  reference and the actual fill (entry avg 27774.67, far beyond the
+  intended 16.75-pt TP distance) -- the TP leg (BUY LIMIT @ 27874) was
+  already marketable at submission and filled within the same second
+  (avg 27776.25), closing for a small loss of $9.50 (3 x 1.583 pts x
+  $2/pt) rather than forming a real trade. The stop leg (BUY STOPMARKET
+  @ 27924) was Accepted correctly this time (valid direction, since
+  27924 was above the live market) and the OCO cancelled it cleanly once
+  the TP leg filled -- confirming the OCO mechanism itself works fine;
+  the earlier naked-position incident was specifically about the stop
+  price landing on the wrong side of a fast-moving market, not an OCO
+  design flaw in general. Telemetry: 342.00 (down from 351.50). This is
+  now 4 of the last ~5 trades distorted by the same root cause (quote
+  fetched before submission vs. actual fill price) in a market moving
+  unusually fast tonight -- strong evidence this needs Option 2 (size
+  the bracket off the confirmed fill price) built soon, not deferred.
+  Cron paused (2026-11-10, ~10:55 ET, user request): cancelled
+  `c9e1834b`. No job scheduled; account confirmed Flat at pause time.
+  **Option 2 implemented (2026-11-10, user request, test-first)**:
+  replaced caller-supplied absolute `stop_loss_stop_price`/
+  `take_profit_limit_price` with `stop_loss_points`/`take_profit_points`
+  (point distances). `process_order` now places the entry alone first,
+  waits for NT8's own fill confirmation via the new
+  `wait_for_entry_fill` (polls `NT8_OUTGOING_DIR`, default 10s timeout,
+  returns `FillResult(status, price)` with status filled/rejected/
+  timeout), then computes the bracket from that CONFIRMED price via the
+  new `compute_bracket_prices_from_fill` (tick-rounded to 0.25). If NT8
+  rejects the entry, no bracket is placed. If fill confirmation times
+  out, `process_order` defensively flattens via `CLOSEPOSITION` rather
+  than risk leaving a naked position (directly closes the gap that
+  caused the near-miss two cycles ago). `build_bracket_exit_commands`
+  signature changed to take explicit `stop_price`/`target_price`
+  arguments instead of reading absolute prices off the order. Added a
+  fail-closed refusal when a bracket is requested but
+  `NT8_OUTGOING_DIR` isn't configured (can't confirm a fill price at
+  all in that case). RED confirmed first (14 new/changed tests failing
+  against the old code), then GREEN: 84/86 tests in
+  `tests/tradovate_bot/` pass (the other 2 are the pre-existing,
+  expected `CONSISTENCY_PCT=2.00` live-edit mismatches, unrelated,
+  left untouched per the user's earlier instruction). Changed:
+  `tradovate_bot/executor.py`, `tests/tradovate_bot/test_executor.py`,
+  `tradovate_bot/README.md`. Not yet committed, and not yet tested
+  against a real live NT8 fill (the next live cycle, whenever the user
+  resumes, will be the first real-world test of this new path).
+  Default timeout tuned (user request): `FILL_CONFIRMATION_TIMEOUT_SECONDS`
+  default changed from 10s to 5s. README updated to match.
+  **First live test of the fill-driven bracket (2026-11-10, ~11:09 ET,
+  manual, user request)**: checked position -- flat. Fresh data: strong,
+  sustained downtrend since the 10:00 ET top (28048.5), -281 pts to a
+  27740.25 low (10:55 ET), modest bounce to 27767.25 (current). Read as
+  SELL on the bounce, continuing the trend. Order placed with the NEW
+  schema: side sell, qty 3, stop_loss_points 33.25, take_profit_points
+  16.75 (no absolute prices supplied by the caller at all). risk_guard
+  allowed it. **Confirmed working as designed**: entry filled clean at
+  27824.00 (single fill, not fragmented); executor waited for that
+  confirmation (SUBMITTED -> FILLED within ~0.6s per NT8's own log/
+  fills.jsonl) and only then computed the bracket from it: stop
+  27857.25 (fill + 33.25, correctly above fill for a short), target
+  27807.25 (fill - 16.75, correctly below). Both legs came back
+  ACCEPTED/WORKING -- no rejection, no instant-marketable fill this
+  time. Verified the position is genuinely still open afterward (Short
+  3 @ 27824 in NT8's log, telemetry unchanged at 342.00, no premature
+  close) -- this is the first cycle all night where the bracket landed
+  correctly on both sides on the first try. Order file cleaned up.
+  Position currently open with a live bracket; outcome will show up in
+  a future check.
+  Manual trade closed (2026-11-10, 11:10:32 ET): take-profit filled
+  exactly at the computed level, 27807.25 -- gain $100.50 (16.75 pts x
+  $2/pt x 3), matching the intended $100 target precisely for the first
+  time all night. Telemetry: 442.50 (up from 342.00). Account Flat.
+  Cron resumed at 15-min cadence (job `13016b17`, offset 7/22/37/52,
+  session-only, expires in 7 days) with the corrected points-based
+  prompt. Committed the Option 2 fix as `ba16113` (risk_guard.py's
+  CONSISTENCY_PCT=2.00 left uncommitted, as instructed).
+  Fourteenth cycle (2026-11-10, ~11:12 ET, first cron fire at the new
+  15-min cadence): checked position -- flat (confirmed closed from the
+  manual trade above). Fresh data: after the 10:55 low (~27740), price
+  bounced to 27830.25 (11:05) then pulled back to 27801.75 (11:10),
+  now 27813.5 -- oscillating in a tight ~30-point range for the last
+  ~35 minutes with no clear breakout either way. Read as choppy
+  consolidation, no directional edge. Skipped the trade (step 3) rather
+  than force one. No order attempted.
+  Fifteenth cycle (2026-11-10, ~11:27 ET): checked position -- flat.
+  Fresh data: a pullback from the 11:05 high (27830.25) to 27761.5
+  (current), but still inside the same ~27740-27830 range flagged last
+  cycle -- not yet a new low below the established 27740.25 range floor.
+  Read as continued chop testing the lower boundary of an established
+  range, not a fresh breakdown; skipped (step 3) rather than sell
+  support that already held once. No order attempted.
+  Sixteenth cycle (2026-11-10, ~11:42 ET): checked position -- flat.
+  Fresh data: the previously choppy 27740-27830 range finally broke --
+  a new low of 27709.25 (11:35 ET), below the prior 27740.25 floor,
+  confirming a genuine breakdown rather than more chop; bounce to
+  27729.25 (11:40) partially retraced to 27711.25 (current). Read as
+  SELL on the bounce, now that the range is confirmed broken. Order:
+  side sell, qty 3, stop_loss_points 33.25, take_profit_points 16.75.
+  risk_guard allowed it. **Clean fill-driven bracket again**: entry
+  filled single-shot at 27684.75 (qty 3, no fragmentation); bracket
+  computed from that real fill: stop 27718.00 (fill + 33.25), target
+  27668.00 (fill - 16.75), both ACCEPTED/WORKING -- no rejection, no
+  instant-marketable leg. Incoming folder empty afterward. Order file
+  cleaned up. Position open: Short 3 MNQ 12-26 @ 27684.75 with a live,
+  correctly-placed bracket; outcome pending a future check.
+  Position closed (2026-11-10, 11:54:43 ET): take-profit filled exactly
+  at 27668.00. Account Flat.
+  Seventeenth cycle (2026-11-10, ~11:57 ET): checked position -- flat.
+  Fresh data: the downtrend continued past the prior cycle's level --
+  a fresh low of 27632.5 (11:55 ET) after the 11:35-11:45 leg down,
+  tiny bounce to 27639.0 (current). Read as SELL on the bounce,
+  continuing the same established downtrend. Order: side sell, qty 3,
+  stop_loss_points 33.25, take_profit_points 16.75. risk_guard allowed
+  it. Entry filled (fragmented, 2+1) at avg 27626.42; bracket computed
+  from that fill: target 27609.75 (fill - 16.75), both legs
+  WORKING/ACCEPTED, no rejection. Incoming folder empty afterward.
+  Order file cleaned up. Position open: Short 3 MNQ 12-26 @ ~27626.42
+  with a live bracket; outcome pending a future check.
+  User instruction: going forward, when the post-cron stop-hook shows
+  the Gentle AI review consent envelope for the recurring task-doc +
+  uncommitted risk_guard.py candidate, auto-select "decline" without
+  asking each time (user's standing decision for this specific
+  recurring situation) -- does not disable review generally.
+  Position closed via STOP-LOSS (2026-11-10, 12:09:59 ET): exit at
+  27660.00 vs entry ~27626.42 -- a real loss this time, ~$200.50 (3 x
+  33.25 pts x $2/pt), within the designed max risk per trade. The
+  bracket worked exactly as intended; not every trade wins. Telemetry:
+  344.00 (down from 544.50). Account Flat.
+  Eighteenth cycle (2026-11-10, ~12:12 ET): checked position -- flat.
+  Fresh data: a clear reversal off the 11:55 low (27631.75) -- four
+  consecutive higher closes (27657.25, 27658.75, 27678.5, 27692.0),
+  +60 pts with no pullback yet. Read as BUY with the fresh momentum
+  (chasing the move slightly, since there was no pullback to buy, but
+  four consecutive up-closes is genuine structure, not noise). Order:
+  side buy, qty 3, stop_loss_points 33.25, take_profit_points 16.75.
+  risk_guard allowed it. Entry filled (fragmented, 2+1) at avg
+  27660.83; bracket computed from that fill: target 27677.50 (fill +
+  16.75), both legs ACCEPTED/WORKING, no rejection. Incoming folder
+  empty afterward. Order file cleaned up. Position open: Long 3 MNQ
+  12-26 @ ~27660.83 with a live bracket; outcome pending a future
+  check.
+  Position closed via STOP-LOSS (2026-11-10, 12:23:40 ET): exit at
+  27627.25 vs entry ~27660.83 -- a second consecutive stop-out,
+  ~$201.50 loss. Telemetry: 142.50 (down from 344.00). Account Flat.
+  User asked for a root-cause analysis of these two consecutive
+  losses. Found via a live cross-check: Yahoo's free chart feed was
+  silently stale by ~11-15 minutes at the time (confirmed: its
+  "current" quote was frozen at 12:17:41 ET while real time was
+  12:28:20 ET) -- cycle 18's BUY decision was made on data that looked
+  current but was already outdated by the time the order actually
+  filled 11 minutes later, buying right at the top of a bounce that
+  had already reversed. Secondary factor: genuine chop/whipsaw in the
+  27600-27700 zone compounded the stale-data problem. User asked about
+  a second data source; confirmed the TradingView MCP server already
+  connected in this session (`mcp-tv-get-ohlcv`/`mcp-tv-get-symbol-data`,
+  symbol `CME_MINI:MNQ1!`) returns genuinely live data
+  (`update_mode: "streaming"`, bars within ~1 min of real time vs.
+  Yahoo's stale feed) -- switched the cron's data source to TradingView
+  going forward, plus two decision-quality rules: prefer entries on a
+  pullback over chasing an extended move, and treat a price zone that
+  has already reversed multiple times recently as a weaker signal.
+  Cancelled cron `13016b17`, created `c0e24c44` (same 15-min cadence,
+  "7,22,37,52 * * * *") with the updated TradingView-based prompt.
+  Nineteenth cycle (2026-11-10, ~12:43 ET, first cycle using
+  TradingView): checked position -- flat. Fresh TradingView data
+  (freshness check passed: last bar 12:40 ET vs now 12:43 ET,
+  update_mode streaming) showed a sharp, genuine breakdown -- 27640
+  (12:30) to 27548.25 (12:35), -91.75 pts in one bar, decisively below
+  the recent chop floor (27622-27631.75). But current price (27549.75)
+  is essentially still at that low with no bounce yet. Per the new
+  pullback rule, skipped (step 3) rather than sell with zero
+  retracement to enter on. No order attempted.
+  **Market-hours rule implemented (2026-11-10, user request, test-first)**:
+  user asked to validate whether a mandatory flat-by-16:00-ET /
+  reopen-at-18:00-ET rule existed anywhere (it did not -- verified by
+  reading risk_guard.py and executor.py in full, no time-of-day check
+  existed at all, only the unrelated 17:00 ET EOD accounting rollover
+  in the NinjaScript AddOn). Added `check_trading_hours(now)` to
+  `risk_guard.py`: closed daily 16:00-18:00 ET Mon-Thu, closed Fri
+  16:00 ET - Sun 18:00 ET (weekend), open otherwise. Wired into
+  `evaluate_order` as a new required third parameter `now` (no default
+  -- a caller can never silently skip this check by omitting it,
+  consistent with the module's fail-closed contract). RED confirmed
+  first (new/changed tests failed against the old 2-arg signature),
+  then GREEN: 96/98 tests in `tests/tradovate_bot/` pass (the other 2
+  are the pre-existing `CONSISTENCY_PCT=2.00` live-edit mismatches,
+  unrelated). `executor.process_order` now passes `time_utils.now_et()`
+  as `now`. Actually flattening a position that's already open when
+  the close window starts still has no Python-side position-awareness
+  (that's a known, not-yet-built capability -- today's "position check"
+  safeguard is entirely manual via the cron prompt reading NT8's log),
+  so the cron prompt's step 1a now instructs a manual CLOSEPOSITION in
+  that specific case; new entries outside hours are blocked in code
+  regardless. Cancelled cron `c0e24c44`, created `195cc97c` (same
+  15-min cadence) with the updated prompt. Changed:
+  `tradovate_bot/risk_guard.py`, `tests/tradovate_bot/test_risk_guard.py`,
+  `tradovate_bot/executor.py`, `tests/tradovate_bot/test_executor.py`,
+  `tradovate_bot/README.md`. Not yet committed.
+  Committed as `db35d82` (CONSISTENCY_PCT line split out via a
+  temporary revert-stage-restore so the uncommitted 2.00 value stayed
+  uncommitted, per the standing instruction).
+  Twentieth cycle (2026-11-10, ~13:08 ET): checked position -- flat.
+  Still well within trading hours (13:08 ET, nowhere near 16:00).
+  Fresh TradingView data (freshness check passed: last bar 13:05 ET,
+  update_mode streaming): the 27540-27690 zone has been chopping for
+  over an hour -- breakdown to 27548.25 (12:35), bounce to 27637.25
+  (12:55, itself a LOWER high than 12:15's 27689.25), now pulling back
+  to 27603.5-27617.75 (current). Per the new repeated-reversal caution
+  rule, read this as continued chop rather than a confident signal in
+  either direction. Skipped (step 3). No order attempted.
+  Twenty-first cycle (2026-11-10, ~13:23 ET): checked position -- flat,
+  within trading hours. Fresh TradingView data (freshness check
+  passed: last bar 13:20 ET, streaming): a slow, low-volatility grind
+  down from the 12:55 bounce high (27637.25) to ~27596.5 (current),
+  -41 pts over 25 min with essentially no bounce -- drift, not genuine
+  momentum, still inside the same hour-long choppy range. Skipped
+  (step 3). No order attempted.
+  Twenty-second cycle (2026-11-10, ~13:38 ET): checked position --
+  flat, within trading hours. Fresh TradingView data (freshness check
+  passed: last bar 13:35 ET, streaming): a clean 4-consecutive-bar
+  rally from the 13:20 low (27594.5) to 27676.75 (current), +82 pts,
+  but no pullback yet, and still inside the same multi-hour choppy
+  range (27517-27732) that has reversed repeatedly. Per the
+  prefer-a-pullback and repeated-reversal-zone rules, waited rather
+  than chase the 4th straight green bar. Skipped (step 3). No order
+  attempted.
+  Twenty-third cycle (2026-11-10, ~13:53 ET): checked position --
+  flat, within trading hours. Fresh TradingView data (freshness check
+  passed: last bar 13:50 ET, streaming): the pullback we were waiting
+  for materialized (13:30-13:35: 27656 -> 27643.25) and resolved
+  upward to a fresh local high (27678.25, 13:50), now a shallow dip to
+  27669 (current). Read as BUY on the confirmed pullback, continuing
+  the uptrend off the 13:20 low (27594.5). Order: side buy, qty 3,
+  stop_loss_points 33.25, take_profit_points 16.75. risk_guard allowed
+  it (including the new trading-hours check). Entry filled clean,
+  single-shot at 27688.50; bracket computed from that fill: target
+  27705.25 (fill + 16.75), both legs ACCEPTED/WORKING, no rejection.
+  Incoming folder empty afterward. Order file cleaned up. Position
+  open: Long 3 MNQ 12-26 @ 27688.50 with a live bracket; outcome
+  pending a future check.
+  Position closed via take-profit (2026-11-10, 13:54:41 ET): exit at
+  exactly 27705.25, gain $100.50. Telemetry: 243.00. Account Flat.
+  Twenty-fourth cycle (2026-11-10, ~14:08 ET): checked position --
+  flat, within trading hours. Fresh TradingView data (freshness check
+  passed: last bar 14:05 ET, streaming): a genuine breakout above the
+  ~2-hour choppy range (27517-27699) to a fresh high of 27740.75
+  (14:05 ET), now a shallow pullback to 27716 (current). Read as BUY
+  on the pullback, continuing the breakout -- the first clean break of
+  new ground all cycle, not just another leg of the same chop. Order:
+  side buy, qty 3, stop_loss_points 33.25, take_profit_points 16.75.
+  risk_guard allowed it. Entry filled clean, single-shot at 27721.25;
+  bracket computed from that fill: target 27738.00 (fill + 16.75),
+  both legs ACCEPTED/WORKING, no rejection. Incoming folder empty
+  afterward. Order file cleaned up. Position open: Long 3 MNQ 12-26 @
+  27721.25 with a live bracket; outcome pending a future check.
+  Position closed via take-profit (2026-11-10, 14:09:32 ET): exit at
+  exactly 27738.00, gain $100.50. Telemetry: 343.50. Account Flat.
+  Twenty-fifth cycle (2026-11-10, ~14:23 ET): checked position --
+  flat, within trading hours. Fresh TradingView data (freshness check
+  passed: last bar 14:20 ET, streaming): same healthy pattern as the
+  last two cycles -- a real pullback (14:05-14:10: 27746.75 ->
+  27697.25) resolved upward to 27719 (14:20), now a shallow dip to
+  27707 (current). Read as BUY on the confirmed pullback, continuing
+  the uptrend. Order: side buy, qty 3, stop_loss_points 33.25,
+  take_profit_points 16.75. risk_guard allowed it.
+  **New bug found: the entry filled (confirmed in NT8's log at
+  27715.17), but `process_order` still defensively flattened on a
+  fill-confirmation timeout, closing almost immediately at 27715.75
+  (net +$3.50, essentially flat -- the safety net worked, but a real
+  trade opportunity was lost).** Root cause confirmed in
+  `oif_writer.tail_outgoing` (line 145, `if filename in updated_seen:
+  continue`): NT8 rewrites the SAME outgoing filename in place as an
+  order's status progresses (confirmed: `Sim101_2d501818...txt`
+  appeared twice tonight, once as `SUBMITTED`, later as `FILLED`, same
+  filename). `wait_for_entry_fill` reads that file once while it's
+  still `SUBMITTED`, marks the filename "seen", and never re-reads it
+  once NT8 rewrites it to `FILLED` -- so it waits out the full 5s
+  timeout and defensively flattens, even though the fill already
+  happened. This is intermittent: it only manifests when a poll
+  catches the file mid-transition (SUBMITTED first) rather than
+  already-FILLED on the first read, which is why earlier cycles
+  tonight didn't hit it. Not yet fixed -- flagged for the user to
+  decide on a fix (likely: `wait_for_entry_fill` should re-read a
+  filename it has already seen rather than permanently excluding it,
+  scoped to that wait loop only, without changing `tail_outgoing`'s
+  shared semantics used elsewhere for continuous fill-logging).
+  Telemetry: 347.00 (up from 343.50, the small net gain from the
+  premature close). Account Flat.

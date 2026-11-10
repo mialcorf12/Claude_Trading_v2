@@ -88,7 +88,7 @@ stopped updating it, we refuse to trade rather than act on stale data.
 | Variable | Purpose |
 |---|---|
 | `NT8_INCOMING_DIR` | NT8 ATI's `incoming` folder (OIF commands are written here) |
-| `NT8_OUTGOING_DIR` | NT8 ATI's `outgoing` folder (confirmation files are tailed from here; optional -- logging only) |
+| `NT8_OUTGOING_DIR` | NT8 ATI's `outgoing` folder (confirmation files are tailed from here). Optional for a bare entry with no bracket, but **required** for any order that requests `stop_loss_points`/`take_profit_points` -- `process_order` refuses rather than place an entry it can't confirm the fill price for (see "Bracket sizing" below) |
 | `NT8_ACCOUNT_ID` | The NT8 account *name* string (e.g. `Sim101`), not a Tradovate numeric id |
 | `ACCOUNT_TELEMETRY_JSON_PATH` | Path to the AddOn's telemetry JSON file |
 | `ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS` | Max age of telemetry before it's treated as stale (default `30`) |
@@ -99,6 +99,47 @@ stopped updating it, we refuse to trade rather than act on stale data.
 `executor.main()` refuses to start (exits non-zero) rather than run against
 an unconfigured/ambiguous transport if `NT8_INCOMING_DIR`, `NT8_ACCOUNT_ID`,
 or `ACCOUNT_TELEMETRY_JSON_PATH` is unset.
+
+## Trading hours
+
+`risk_guard.evaluate_order` now requires a third argument, `now` (a
+timezone-aware datetime, e.g. `tradovate_bot.time_utils.now_et()`), and
+hard-rejects any order outside the trading window: closed daily
+16:00-18:00 ET Monday-Thursday, and closed from Friday 16:00 ET through
+Sunday 18:00 ET (weekend) -- confirmed by the user, 2026-11-10. `now` is
+required, not defaulted, so a caller can never silently skip this check.
+This blocks new entries outside hours in code; actually flattening a
+position that's already open when the close window starts is still a
+manual step in the cron prompt (no automated position-awareness exists
+yet in Python -- see the "What is NOT verified yet" section).
+
+## Bracket sizing (fill-driven, not quote-driven)
+
+An order's protective bracket is requested via `stop_loss_points`/
+`take_profit_points` -- distances in price points, never absolute prices.
+`process_order` places the entry alone first, waits for NT8's own fill
+confirmation (`wait_for_entry_fill`, polling `NT8_OUTGOING_DIR`, default
+5s timeout), and only then computes the stop/target as absolute,
+tick-rounded prices from that CONFIRMED fill price
+(`compute_bracket_prices_from_fill`). It never derives a bracket from a
+quote fetched before submission.
+
+This replaced an earlier design (absolute `stop_loss_stop_price`/
+`take_profit_limit_price` supplied by the caller) after it caused repeated
+live incidents on 2026-11-10: in a fast-moving market, the gap between a
+pre-submission quote and the actual fill repeatedly put one bracket leg
+on the wrong side of the live market -- causing instant/premature exits
+three times, and once causing NT8 to reject the stop leg outright
+("Sell stop or sell stop limit orders can't be placed above the
+market."), which cascaded into the OCO-linked target leg also being
+rejected and left a live position fully unprotected for about two
+minutes. See `odd/tasks/tradovate-execution-bot.md` for the full incident
+log.
+
+If NT8 rejects the entry itself, no bracket is placed (nothing to
+protect). If fill confirmation doesn't arrive within the timeout,
+`process_order` defensively flattens the position via `CLOSEPOSITION`
+rather than risk leaving it open with no stop and no target.
 
 `executor.py` also has a hardcoded `NT8_INSTRUMENT` constant (currently
 `"MNQ 12-26"`) for the OIF command's INSTRUMENT field -- NT8 rejects the

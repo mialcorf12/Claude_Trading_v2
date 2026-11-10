@@ -19,6 +19,11 @@ odd/tasks/tradovate-execution-bot.md):
     is then 100% of the (near-zero) running total (see
     odd/tasks/tradovate-execution-bot.md, 2026-11-10 overnight lockout).
   - Instrument: MNQ only, hard cap of 3 contracts per position.
+  - Trading hours (confirmed by the user, 2026-11-10): closed daily
+    16:00-18:00 ET Monday-Thursday, and closed from Friday 16:00 ET
+    through Sunday 18:00 ET (weekend) -- all positions must be flat
+    before the daily/weekend close, and no new entry may be placed while
+    closed.
 
 Fail-closed contract: `evaluate_order` returns `allow=False` for any
 missing, malformed, or ambiguous input. There is no code path that defaults
@@ -26,6 +31,7 @@ to allowing a trade when the inputs can't be trusted.
 """
 import math
 from dataclasses import dataclass
+from datetime import time
 
 DAILY_LOSS_LIMIT = 600.0
 MAX_LOSS_LIMIT = 1000.0
@@ -33,6 +39,8 @@ CONSISTENCY_PCT = 0.40
 PROFIT_TARGET = 1250.0
 ALLOWED_SYMBOL = "MNQ"
 MAX_CONTRACTS = 3
+MARKET_CLOSE_TIME = time(16, 0)
+MARKET_REOPEN_TIME = time(18, 0)
 
 REQUIRED_ACCOUNT_FIELDS = (
     "daily_realized_pnl",
@@ -102,6 +110,32 @@ def check_consistency(daily_profit_today, total_realized_profit):
     return True, "consistency rule satisfied"
 
 
+def check_trading_hours(now):
+    """Weekly trading schedule: closed daily 16:00-18:00 ET Monday-Thursday,
+    and closed from Friday 16:00 ET through Sunday 18:00 ET (weekend).
+    `now` must be a timezone-aware datetime (e.g. tradovate_bot.time_utils.
+    now_et()) -- this module has no clock access of its own, per its module
+    docstring, so the caller always supplies "now" explicitly."""
+    if now is None or now.tzinfo is None:
+        return False, "now is missing or not a timezone-aware datetime"
+    weekday = now.weekday()  # Monday=0 ... Sunday=6
+    t = now.time()
+    if weekday in (0, 1, 2, 3):  # Monday-Thursday
+        closed = MARKET_CLOSE_TIME <= t < MARKET_REOPEN_TIME
+    elif weekday == 4:  # Friday
+        closed = t >= MARKET_CLOSE_TIME
+    elif weekday == 5:  # Saturday
+        closed = True
+    else:  # Sunday
+        closed = t < MARKET_REOPEN_TIME
+    if closed:
+        return False, (
+            "market closed: outside trading hours (closed daily 16:00-18:00 ET "
+            "Mon-Thu, and Fri 16:00 ET - Sun 18:00 ET)"
+        )
+    return True, "within trading hours"
+
+
 def check_position_size(symbol, qty):
     """MNQ only, hard cap of 3 contracts. Rejects anything else outright."""
     if not isinstance(symbol, str) or symbol.strip().upper() != ALLOWED_SYMBOL:
@@ -119,11 +153,16 @@ def check_position_size(symbol, qty):
 
 # ---------------------------------------------------------------- top-level gate
 
-def evaluate_order(order, account_state):
+def evaluate_order(order, account_state, now):
     """Run every risk check for a proposed order against current account
     state. Returns a Decision(allow, reason). Fails closed: any missing,
-    malformed, or ambiguous order or account_state field results in
-    allow=False rather than a guess."""
+    malformed, or ambiguous order, account_state, or now field results in
+    allow=False rather than a guess.
+
+    `now` is required (not defaulted) so a caller can never silently skip
+    the trading-hours check by forgetting to pass it -- see
+    check_trading_hours and this module's "no clock access of its own"
+    contract."""
     if not isinstance(order, dict):
         return Decision(False, "order is missing or not a record")
     if not isinstance(account_state, dict):
@@ -135,6 +174,10 @@ def evaluate_order(order, account_state):
     for field in REQUIRED_ACCOUNT_FIELDS:
         if field not in account_state:
             return Decision(False, "account_state is missing required field: %s" % field)
+
+    ok, reason = check_trading_hours(now)
+    if not ok:
+        return Decision(False, reason)
 
     ok, reason = check_position_size(order.get("symbol"), order.get("qty"))
     if not ok:
