@@ -331,7 +331,7 @@ def process_order(raw_order):
         return decision
 
     account_state_dict = fetch_account_state()
-    decision = risk_guard.evaluate_order(order, account_state_dict)
+    decision = risk_guard.evaluate_order(order, account_state_dict, time_utils.now_et())
     log_decision(order, decision, extra={"account_state": account_state_dict})
 
     if not decision.allow:

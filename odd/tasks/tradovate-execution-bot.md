@@ -541,3 +541,133 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   correctly on both sides on the first try. Order file cleaned up.
   Position currently open with a live bracket; outcome will show up in
   a future check.
+  Manual trade closed (2026-11-10, 11:10:32 ET): take-profit filled
+  exactly at the computed level, 27807.25 -- gain $100.50 (16.75 pts x
+  $2/pt x 3), matching the intended $100 target precisely for the first
+  time all night. Telemetry: 442.50 (up from 342.00). Account Flat.
+  Cron resumed at 15-min cadence (job `13016b17`, offset 7/22/37/52,
+  session-only, expires in 7 days) with the corrected points-based
+  prompt. Committed the Option 2 fix as `ba16113` (risk_guard.py's
+  CONSISTENCY_PCT=2.00 left uncommitted, as instructed).
+  Fourteenth cycle (2026-11-10, ~11:12 ET, first cron fire at the new
+  15-min cadence): checked position -- flat (confirmed closed from the
+  manual trade above). Fresh data: after the 10:55 low (~27740), price
+  bounced to 27830.25 (11:05) then pulled back to 27801.75 (11:10),
+  now 27813.5 -- oscillating in a tight ~30-point range for the last
+  ~35 minutes with no clear breakout either way. Read as choppy
+  consolidation, no directional edge. Skipped the trade (step 3) rather
+  than force one. No order attempted.
+  Fifteenth cycle (2026-11-10, ~11:27 ET): checked position -- flat.
+  Fresh data: a pullback from the 11:05 high (27830.25) to 27761.5
+  (current), but still inside the same ~27740-27830 range flagged last
+  cycle -- not yet a new low below the established 27740.25 range floor.
+  Read as continued chop testing the lower boundary of an established
+  range, not a fresh breakdown; skipped (step 3) rather than sell
+  support that already held once. No order attempted.
+  Sixteenth cycle (2026-11-10, ~11:42 ET): checked position -- flat.
+  Fresh data: the previously choppy 27740-27830 range finally broke --
+  a new low of 27709.25 (11:35 ET), below the prior 27740.25 floor,
+  confirming a genuine breakdown rather than more chop; bounce to
+  27729.25 (11:40) partially retraced to 27711.25 (current). Read as
+  SELL on the bounce, now that the range is confirmed broken. Order:
+  side sell, qty 3, stop_loss_points 33.25, take_profit_points 16.75.
+  risk_guard allowed it. **Clean fill-driven bracket again**: entry
+  filled single-shot at 27684.75 (qty 3, no fragmentation); bracket
+  computed from that real fill: stop 27718.00 (fill + 33.25), target
+  27668.00 (fill - 16.75), both ACCEPTED/WORKING -- no rejection, no
+  instant-marketable leg. Incoming folder empty afterward. Order file
+  cleaned up. Position open: Short 3 MNQ 12-26 @ 27684.75 with a live,
+  correctly-placed bracket; outcome pending a future check.
+  Position closed (2026-11-10, 11:54:43 ET): take-profit filled exactly
+  at 27668.00. Account Flat.
+  Seventeenth cycle (2026-11-10, ~11:57 ET): checked position -- flat.
+  Fresh data: the downtrend continued past the prior cycle's level --
+  a fresh low of 27632.5 (11:55 ET) after the 11:35-11:45 leg down,
+  tiny bounce to 27639.0 (current). Read as SELL on the bounce,
+  continuing the same established downtrend. Order: side sell, qty 3,
+  stop_loss_points 33.25, take_profit_points 16.75. risk_guard allowed
+  it. Entry filled (fragmented, 2+1) at avg 27626.42; bracket computed
+  from that fill: target 27609.75 (fill - 16.75), both legs
+  WORKING/ACCEPTED, no rejection. Incoming folder empty afterward.
+  Order file cleaned up. Position open: Short 3 MNQ 12-26 @ ~27626.42
+  with a live bracket; outcome pending a future check.
+  User instruction: going forward, when the post-cron stop-hook shows
+  the Gentle AI review consent envelope for the recurring task-doc +
+  uncommitted risk_guard.py candidate, auto-select "decline" without
+  asking each time (user's standing decision for this specific
+  recurring situation) -- does not disable review generally.
+  Position closed via STOP-LOSS (2026-11-10, 12:09:59 ET): exit at
+  27660.00 vs entry ~27626.42 -- a real loss this time, ~$200.50 (3 x
+  33.25 pts x $2/pt), within the designed max risk per trade. The
+  bracket worked exactly as intended; not every trade wins. Telemetry:
+  344.00 (down from 544.50). Account Flat.
+  Eighteenth cycle (2026-11-10, ~12:12 ET): checked position -- flat.
+  Fresh data: a clear reversal off the 11:55 low (27631.75) -- four
+  consecutive higher closes (27657.25, 27658.75, 27678.5, 27692.0),
+  +60 pts with no pullback yet. Read as BUY with the fresh momentum
+  (chasing the move slightly, since there was no pullback to buy, but
+  four consecutive up-closes is genuine structure, not noise). Order:
+  side buy, qty 3, stop_loss_points 33.25, take_profit_points 16.75.
+  risk_guard allowed it. Entry filled (fragmented, 2+1) at avg
+  27660.83; bracket computed from that fill: target 27677.50 (fill +
+  16.75), both legs ACCEPTED/WORKING, no rejection. Incoming folder
+  empty afterward. Order file cleaned up. Position open: Long 3 MNQ
+  12-26 @ ~27660.83 with a live bracket; outcome pending a future
+  check.
+  Position closed via STOP-LOSS (2026-11-10, 12:23:40 ET): exit at
+  27627.25 vs entry ~27660.83 -- a second consecutive stop-out,
+  ~$201.50 loss. Telemetry: 142.50 (down from 344.00). Account Flat.
+  User asked for a root-cause analysis of these two consecutive
+  losses. Found via a live cross-check: Yahoo's free chart feed was
+  silently stale by ~11-15 minutes at the time (confirmed: its
+  "current" quote was frozen at 12:17:41 ET while real time was
+  12:28:20 ET) -- cycle 18's BUY decision was made on data that looked
+  current but was already outdated by the time the order actually
+  filled 11 minutes later, buying right at the top of a bounce that
+  had already reversed. Secondary factor: genuine chop/whipsaw in the
+  27600-27700 zone compounded the stale-data problem. User asked about
+  a second data source; confirmed the TradingView MCP server already
+  connected in this session (`mcp-tv-get-ohlcv`/`mcp-tv-get-symbol-data`,
+  symbol `CME_MINI:MNQ1!`) returns genuinely live data
+  (`update_mode: "streaming"`, bars within ~1 min of real time vs.
+  Yahoo's stale feed) -- switched the cron's data source to TradingView
+  going forward, plus two decision-quality rules: prefer entries on a
+  pullback over chasing an extended move, and treat a price zone that
+  has already reversed multiple times recently as a weaker signal.
+  Cancelled cron `13016b17`, created `c0e24c44` (same 15-min cadence,
+  "7,22,37,52 * * * *") with the updated TradingView-based prompt.
+  Nineteenth cycle (2026-11-10, ~12:43 ET, first cycle using
+  TradingView): checked position -- flat. Fresh TradingView data
+  (freshness check passed: last bar 12:40 ET vs now 12:43 ET,
+  update_mode streaming) showed a sharp, genuine breakdown -- 27640
+  (12:30) to 27548.25 (12:35), -91.75 pts in one bar, decisively below
+  the recent chop floor (27622-27631.75). But current price (27549.75)
+  is essentially still at that low with no bounce yet. Per the new
+  pullback rule, skipped (step 3) rather than sell with zero
+  retracement to enter on. No order attempted.
+  **Market-hours rule implemented (2026-11-10, user request, test-first)**:
+  user asked to validate whether a mandatory flat-by-16:00-ET /
+  reopen-at-18:00-ET rule existed anywhere (it did not -- verified by
+  reading risk_guard.py and executor.py in full, no time-of-day check
+  existed at all, only the unrelated 17:00 ET EOD accounting rollover
+  in the NinjaScript AddOn). Added `check_trading_hours(now)` to
+  `risk_guard.py`: closed daily 16:00-18:00 ET Mon-Thu, closed Fri
+  16:00 ET - Sun 18:00 ET (weekend), open otherwise. Wired into
+  `evaluate_order` as a new required third parameter `now` (no default
+  -- a caller can never silently skip this check by omitting it,
+  consistent with the module's fail-closed contract). RED confirmed
+  first (new/changed tests failed against the old 2-arg signature),
+  then GREEN: 96/98 tests in `tests/tradovate_bot/` pass (the other 2
+  are the pre-existing `CONSISTENCY_PCT=2.00` live-edit mismatches,
+  unrelated). `executor.process_order` now passes `time_utils.now_et()`
+  as `now`. Actually flattening a position that's already open when
+  the close window starts still has no Python-side position-awareness
+  (that's a known, not-yet-built capability -- today's "position check"
+  safeguard is entirely manual via the cron prompt reading NT8's log),
+  so the cron prompt's step 1a now instructs a manual CLOSEPOSITION in
+  that specific case; new entries outside hours are blocked in code
+  regardless. Cancelled cron `c0e24c44`, created `195cc97c` (same
+  15-min cadence) with the updated prompt. Changed:
+  `tradovate_bot/risk_guard.py`, `tests/tradovate_bot/test_risk_guard.py`,
+  `tradovate_bot/executor.py`, `tests/tradovate_bot/test_executor.py`,
+  `tradovate_bot/README.md`. Not yet committed.

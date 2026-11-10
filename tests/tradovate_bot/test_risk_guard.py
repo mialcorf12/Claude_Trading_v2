@@ -7,15 +7,29 @@ Lucid Trading 25k Flex Eval parameters under test:
   - Consistency rule: 40% (no single day's realized profit may exceed 40% of
     the $1250 PROFIT_TARGET -- not 40% of profit realized so far, which would
     falsely reject the very first profitable day of an evaluation).
+  - Trading hours: closed daily 16:00-18:00 ET Monday-Thursday, and closed
+    from Friday 16:00 ET through Sunday 18:00 ET (weekend). All positions
+    must be flat before the daily/weekend close.
   - Position sizing: MNQ only, hard cap 3 contracts.
   - Fail-closed on any missing/ambiguous/malformed account-state input.
 
 These tests are written before/alongside the implementation and drive its
 design, per the ODD test-first policy for this module.
 """
+from datetime import datetime
+
 import pytest
 
 from tradovate_bot import risk_guard as rg
+from tradovate_bot.time_utils import EASTERN
+
+# Wednesday 2026-11-11, 10:00 ET -- unambiguously within trading hours, used
+# as the default `now` for every test that isn't specifically about hours.
+WITHIN_HOURS = datetime(2026, 11, 11, 10, 0, tzinfo=EASTERN)
+
+
+def _evaluate(order, account_state, now=WITHIN_HOURS):
+    return rg.evaluate_order(order, account_state, now)
 
 
 def base_order(**overrides):
@@ -40,7 +54,7 @@ def base_account_state(**overrides):
 # ---------------------------------------------------------------- pass case
 
 def test_all_limits_satisfied_passes():
-    decision = rg.evaluate_order(base_order(), base_account_state())
+    decision = _evaluate(base_order(), base_account_state())
     assert decision.allow is True
     assert decision.reason == "all risk checks passed"
 
@@ -49,20 +63,20 @@ def test_all_limits_satisfied_passes():
 
 def test_daily_loss_limit_breached_rejects():
     state = base_account_state(daily_realized_pnl=-600.0)
-    decision = rg.evaluate_order(base_order(), state)
+    decision = _evaluate(base_order(), state)
     assert decision.allow is False
     assert "daily loss" in decision.reason.lower()
 
 
 def test_daily_loss_limit_just_under_passes():
     state = base_account_state(daily_realized_pnl=-599.99)
-    decision = rg.evaluate_order(base_order(), state)
+    decision = _evaluate(base_order(), state)
     assert decision.allow is True
 
 
 def test_daily_loss_limit_exceeded_further_rejects():
     state = base_account_state(daily_realized_pnl=-750.0)
-    decision = rg.evaluate_order(base_order(), state)
+    decision = _evaluate(base_order(), state)
     assert decision.allow is False
     assert "daily loss" in decision.reason.lower()
 
@@ -72,7 +86,7 @@ def test_daily_loss_limit_exceeded_further_rejects():
 def test_eod_max_loss_breached_rejects():
     # floor = 25000 - 1000 = 24000; current balance below floor
     state = base_account_state(eod_balance_last_close=25000.0, current_balance=23999.0)
-    decision = rg.evaluate_order(base_order(), state)
+    decision = _evaluate(base_order(), state)
     assert decision.allow is False
     assert "max-loss" in decision.reason.lower() or "max loss" in decision.reason.lower()
 
@@ -81,14 +95,14 @@ def test_eod_max_loss_floor_is_not_adjusted_intraday():
     # Equity rose intraday to 26000 then the EOD close used for the floor
     # must still be the LAST close (25000), never today's higher equity.
     state = base_account_state(eod_balance_last_close=25000.0, current_balance=24500.0)
-    decision = rg.evaluate_order(base_order(), state)
+    decision = _evaluate(base_order(), state)
     # 24500 >= 25000 - 1000 = 24000 -> still passes
     assert decision.allow is True
 
 
 def test_eod_max_loss_exactly_at_floor_passes():
     state = base_account_state(eod_balance_last_close=25000.0, current_balance=24000.0)
-    decision = rg.evaluate_order(base_order(), state)
+    decision = _evaluate(base_order(), state)
     assert decision.allow is True
 
 
@@ -97,7 +111,7 @@ def test_eod_max_loss_exactly_at_floor_passes():
 def test_consistency_rule_breached_rejects():
     # today's profit (600) is more than 40% of the $1250 PROFIT_TARGET (500)
     state = base_account_state(daily_profit_today=600.0, total_realized_profit=1000.0)
-    decision = rg.evaluate_order(base_order(), state)
+    decision = _evaluate(base_order(), state)
     assert decision.allow is False
     assert "consistency" in decision.reason.lower()
 
@@ -105,13 +119,13 @@ def test_consistency_rule_breached_rejects():
 def test_consistency_rule_at_exactly_40_percent_of_target_passes():
     # 0.40 * PROFIT_TARGET (1250) == 500.0, exactly at the boundary
     state = base_account_state(daily_profit_today=500.0, total_realized_profit=1000.0)
-    decision = rg.evaluate_order(base_order(), state)
+    decision = _evaluate(base_order(), state)
     assert decision.allow is True
 
 
 def test_consistency_rule_no_profit_yet_passes():
     state = base_account_state(daily_profit_today=0.0, total_realized_profit=0.0)
-    decision = rg.evaluate_order(base_order(), state)
+    decision = _evaluate(base_order(), state)
     assert decision.allow is True
 
 
@@ -122,25 +136,90 @@ def test_consistency_rule_ignores_cumulative_total_not_the_fixed_target():
     # The rule must compare against the fixed PROFIT_TARGET instead, so a
     # modest first-day profit should pass regardless of the cumulative total.
     state = base_account_state(daily_profit_today=235.5, total_realized_profit=235.5)
-    decision = rg.evaluate_order(base_order(), state)
+    decision = _evaluate(base_order(), state)
     assert decision.allow is True
+
+
+# ---------------------------------------------------------------- trading hours
+
+def test_trading_hours_closed_during_daily_gap_mon_thu():
+    # Monday 2026-11-09, 16:30 ET -- inside the daily 16:00-18:00 gap
+    now = datetime(2026, 11, 9, 16, 30, tzinfo=EASTERN)
+    decision = _evaluate(base_order(), base_account_state(), now=now)
+    assert decision.allow is False
+    assert "trading hours" in decision.reason.lower() or "closed" in decision.reason.lower()
+
+
+def test_trading_hours_closed_exactly_at_1600():
+    # closing time itself is already closed, not "closed starting the next tick"
+    now = datetime(2026, 11, 9, 16, 0, tzinfo=EASTERN)
+    decision = _evaluate(base_order(), base_account_state(), now=now)
+    assert decision.allow is False
+
+
+def test_trading_hours_open_immediately_after_reopen_mon_thu():
+    now = datetime(2026, 11, 9, 18, 0, tzinfo=EASTERN)
+    decision = _evaluate(base_order(), base_account_state(), now=now)
+    assert decision.allow is True
+
+
+def test_trading_hours_closed_on_friday_evening():
+    # Friday 2026-11-13, 20:00 ET -- weekend close already in effect
+    now = datetime(2026, 11, 13, 20, 0, tzinfo=EASTERN)
+    decision = _evaluate(base_order(), base_account_state(), now=now)
+    assert decision.allow is False
+
+
+def test_trading_hours_open_friday_before_1600():
+    now = datetime(2026, 11, 13, 15, 59, tzinfo=EASTERN)
+    decision = _evaluate(base_order(), base_account_state(), now=now)
+    assert decision.allow is True
+
+
+def test_trading_hours_closed_all_day_saturday():
+    now = datetime(2026, 11, 14, 12, 0, tzinfo=EASTERN)
+    decision = _evaluate(base_order(), base_account_state(), now=now)
+    assert decision.allow is False
+
+
+def test_trading_hours_closed_sunday_before_reopen():
+    now = datetime(2026, 11, 15, 10, 0, tzinfo=EASTERN)
+    decision = _evaluate(base_order(), base_account_state(), now=now)
+    assert decision.allow is False
+
+
+def test_trading_hours_open_sunday_after_reopen():
+    now = datetime(2026, 11, 15, 18, 0, tzinfo=EASTERN)
+    decision = _evaluate(base_order(), base_account_state(), now=now)
+    assert decision.allow is True
+
+
+def test_trading_hours_rejects_naive_datetime():
+    now = datetime(2026, 11, 11, 10, 0)  # no tzinfo
+    decision = _evaluate(base_order(), base_account_state(), now=now)
+    assert decision.allow is False
+
+
+def test_trading_hours_rejects_none():
+    decision = _evaluate(base_order(), base_account_state(), now=None)
+    assert decision.allow is False
 
 
 # ---------------------------------------------------------------- position sizing
 
 def test_position_size_over_cap_rejects():
-    decision = rg.evaluate_order(base_order(qty=4), base_account_state())
+    decision = _evaluate(base_order(qty=4), base_account_state())
     assert decision.allow is False
     assert "position size" in decision.reason.lower() or "contract" in decision.reason.lower()
 
 
 def test_position_size_at_cap_passes():
-    decision = rg.evaluate_order(base_order(qty=3), base_account_state())
+    decision = _evaluate(base_order(qty=3), base_account_state())
     assert decision.allow is True
 
 
 def test_non_mnq_symbol_rejects():
-    decision = rg.evaluate_order(base_order(symbol="ES"), base_account_state())
+    decision = _evaluate(base_order(symbol="ES"), base_account_state())
     assert decision.allow is False
     assert "mnq" in decision.reason.lower()
 
@@ -150,42 +229,42 @@ def test_non_mnq_symbol_rejects():
 def test_missing_account_state_field_fails_closed():
     state = base_account_state()
     del state["daily_realized_pnl"]
-    decision = rg.evaluate_order(base_order(), state)
+    decision = _evaluate(base_order(), state)
     assert decision.allow is False
 
 
 def test_none_account_state_fails_closed():
-    decision = rg.evaluate_order(base_order(), None)
+    decision = _evaluate(base_order(), None)
     assert decision.allow is False
 
 
 def test_malformed_account_state_value_fails_closed():
     state = base_account_state(current_balance="not-a-number")
-    decision = rg.evaluate_order(base_order(), state)
+    decision = _evaluate(base_order(), state)
     assert decision.allow is False
 
 
 def test_missing_order_field_fails_closed():
     order = base_order()
     del order["qty"]
-    decision = rg.evaluate_order(order, base_account_state())
+    decision = _evaluate(order, base_account_state())
     assert decision.allow is False
 
 
 def test_none_order_fails_closed():
-    decision = rg.evaluate_order(None, base_account_state())
+    decision = _evaluate(None, base_account_state())
     assert decision.allow is False
 
 
 def test_zero_or_negative_qty_fails_closed():
-    decision = rg.evaluate_order(base_order(qty=0), base_account_state())
+    decision = _evaluate(base_order(qty=0), base_account_state())
     assert decision.allow is False
-    decision2 = rg.evaluate_order(base_order(qty=-1), base_account_state())
+    decision2 = _evaluate(base_order(qty=-1), base_account_state())
     assert decision2.allow is False
 
 
 def test_nan_in_account_state_fails_closed():
-    decision = rg.evaluate_order(base_order(), base_account_state(current_balance=float("nan")))
+    decision = _evaluate(base_order(), base_account_state(current_balance=float("nan")))
     assert decision.allow is False
 
 
@@ -232,4 +311,11 @@ def test_check_position_size_function_directly():
     ok, reason = rg.check_position_size("MNQ", 4)
     assert ok is False
     ok, reason = rg.check_position_size("ES", 1)
+    assert ok is False
+
+
+def test_check_trading_hours_function_directly():
+    ok, reason = rg.check_trading_hours(WITHIN_HOURS)
+    assert ok is True
+    ok, reason = rg.check_trading_hours(datetime(2026, 11, 9, 17, 0, tzinfo=EASTERN))
     assert ok is False

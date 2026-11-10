@@ -8,11 +8,16 @@ the actual account_state.read_account_state function.
 """
 import json
 import os
+from datetime import datetime
 from unittest import mock
 
 import pytest
 
 from tradovate_bot import executor, time_utils
+
+# Wednesday 2026-11-11, 10:00 ET -- unambiguously within trading hours, so
+# executor tests never depend on the real wall-clock time when they run.
+WITHIN_HOURS = datetime(2026, 11, 11, 10, 0, tzinfo=time_utils.EASTERN)
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +29,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(executor, "NT8_OUTGOING_DIR", str(tmp_path / "outgoing"))
     monkeypatch.setattr(executor, "NT8_ACCOUNT_ID", "SIM101")
     monkeypatch.setattr(executor, "NT8_INSTRUMENT", "MNQ 12-26")
+    monkeypatch.setattr(time_utils, "now_et", lambda: WITHIN_HOURS)
     yield tmp_path
 
 
@@ -133,6 +139,20 @@ def test_process_order_places_order_when_all_checks_pass(isolated_state, monkeyp
     assert decisions[0]["allow"] is True
     assert fills[0]["status"] == "sent"
     assert fills[0]["command"] == command_arg
+
+
+def test_process_order_rejects_outside_trading_hours(isolated_state, monkeypatch):
+    monkeypatch.setattr(time_utils, "now_et", lambda: datetime(2026, 11, 9, 17, 0, tzinfo=time_utils.EASTERN))
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock()
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"}
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is False
+    assert "trading hours" in decision.reason.lower() or "closed" in decision.reason.lower()
+    write_command.assert_not_called()
 
 
 def test_process_order_rejects_oversized_mnq_position(isolated_state, monkeypatch):

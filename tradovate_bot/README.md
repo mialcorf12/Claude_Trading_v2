@@ -100,6 +100,19 @@ stopped updating it, we refuse to trade rather than act on stale data.
 an unconfigured/ambiguous transport if `NT8_INCOMING_DIR`, `NT8_ACCOUNT_ID`,
 or `ACCOUNT_TELEMETRY_JSON_PATH` is unset.
 
+## Trading hours
+
+`risk_guard.evaluate_order` now requires a third argument, `now` (a
+timezone-aware datetime, e.g. `tradovate_bot.time_utils.now_et()`), and
+hard-rejects any order outside the trading window: closed daily
+16:00-18:00 ET Monday-Thursday, and closed from Friday 16:00 ET through
+Sunday 18:00 ET (weekend) -- confirmed by the user, 2026-11-10. `now` is
+required, not defaulted, so a caller can never silently skip this check.
+This blocks new entries outside hours in code; actually flattening a
+position that's already open when the close window starts is still a
+manual step in the cron prompt (no automated position-awareness exists
+yet in Python -- see the "What is NOT verified yet" section).
+
 ## Bracket sizing (fill-driven, not quote-driven)
 
 An order's protective bracket is requested via `stop_loss_points`/
