@@ -271,13 +271,26 @@ class FillResult:
     price: float = None
 
 
+_TERMINAL_OUTGOING_STATUSES = {"FILLED", "REJECTED", "CANCELLED"}
+
+
 def wait_for_entry_fill(seen_files, timeout_seconds=None, poll_interval_seconds=None):
     """Polls NT8's outgoing folder for the entry order's own confirmation,
     logging every new record seen (same as poll_outgoing_once). Returns a
     FillResult as soon as a FILLED or REJECTED record appears, or "timeout"
     once timeout_seconds has elapsed with neither. seen_files should be a
     snapshot of the outgoing folder taken immediately before the entry
-    command was written, so only records that appear afterward are seen."""
+    command was written, so only records that appear afterward are seen.
+
+    NT8 rewrites the SAME outgoing filename in place as an order's status
+    progresses (e.g. SUBMITTED -> FILLED) rather than writing a new file
+    per status (confirmed live, 2026-11-10: a poll that caught a file
+    while still SUBMITTED, with oif_writer.tail_outgoing's normal
+    "new filenames only" exclusion, then never saw that same file's later
+    rewrite to FILLED -- timing out and defensively flattening a position
+    that had, in fact, already filled). So a filename is only treated as
+    permanently seen once it reaches a terminal status; anything else is
+    re-read on the next poll."""
     if timeout_seconds is None:
         timeout_seconds = FILL_CONFIRMATION_TIMEOUT_SECONDS
     if poll_interval_seconds is None:
@@ -285,7 +298,7 @@ def wait_for_entry_fill(seen_files, timeout_seconds=None, poll_interval_seconds=
     seen = set(seen_files)
     deadline = time.monotonic() + timeout_seconds
     while True:
-        records, seen = oif_writer.tail_outgoing(NT8_OUTGOING_DIR, seen)
+        records, polled_seen = oif_writer.tail_outgoing(NT8_OUTGOING_DIR, seen)
         for record in records:
             log_fill({"source": "nt8_outgoing", "record": record})
             raw_fields = record.get("raw_fields") or []
@@ -299,6 +312,9 @@ def wait_for_entry_fill(seen_files, timeout_seconds=None, poll_interval_seconds=
                     return FillResult("filled", price)
             elif status == "REJECTED":
                 return FillResult("rejected")
+            if status not in _TERMINAL_OUTGOING_STATUSES:
+                polled_seen.discard(record.get("filename"))
+        seen = polled_seen
         if time.monotonic() >= deadline:
             return FillResult("timeout")
         time.sleep(poll_interval_seconds)

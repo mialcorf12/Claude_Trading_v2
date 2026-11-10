@@ -335,6 +335,28 @@ def test_wait_for_entry_fill_returns_timeout_when_no_confirmation_arrives(isolat
     assert result.price is None
 
 
+def test_wait_for_entry_fill_rereads_same_filename_when_nt8_rewrites_it_in_place(isolated_state, monkeypatch):
+    # Regression for the 2026-11-10 incident: NT8 rewrites the SAME
+    # outgoing filename in place as an order's status progresses
+    # (SUBMITTED -> FILLED) rather than writing a new file per status.
+    # This exercises the REAL oif_writer.tail_outgoing (not mocked) so
+    # it actually reproduces the filename-permanently-excluded bug.
+    outgoing = isolated_state / "outgoing"
+    outgoing.mkdir()
+    fill_file = outgoing / "Sim101_order123.txt"
+    fill_file.write_text("SUBMITTED;0;0", encoding="utf-8")
+
+    def _rewrite_to_filled_between_polls(seconds):
+        fill_file.write_text("FILLED;3;27700.0", encoding="utf-8")
+
+    monkeypatch.setattr(executor.time, "sleep", _rewrite_to_filled_between_polls)
+
+    result = executor.wait_for_entry_fill(seen_files=set(), timeout_seconds=5.0, poll_interval_seconds=0)
+
+    assert result.status == "filled"
+    assert result.price == 27700.0
+
+
 # ---------------------------------------------------------------- process_order, fill-driven bracket
 
 def test_process_order_waits_for_fill_then_places_bracket_from_real_fill_price(isolated_state, monkeypatch):

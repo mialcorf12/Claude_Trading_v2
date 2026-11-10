@@ -671,3 +671,93 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   `tradovate_bot/risk_guard.py`, `tests/tradovate_bot/test_risk_guard.py`,
   `tradovate_bot/executor.py`, `tests/tradovate_bot/test_executor.py`,
   `tradovate_bot/README.md`. Not yet committed.
+  Committed as `db35d82` (CONSISTENCY_PCT line split out via a
+  temporary revert-stage-restore so the uncommitted 2.00 value stayed
+  uncommitted, per the standing instruction).
+  Twentieth cycle (2026-11-10, ~13:08 ET): checked position -- flat.
+  Still well within trading hours (13:08 ET, nowhere near 16:00).
+  Fresh TradingView data (freshness check passed: last bar 13:05 ET,
+  update_mode streaming): the 27540-27690 zone has been chopping for
+  over an hour -- breakdown to 27548.25 (12:35), bounce to 27637.25
+  (12:55, itself a LOWER high than 12:15's 27689.25), now pulling back
+  to 27603.5-27617.75 (current). Per the new repeated-reversal caution
+  rule, read this as continued chop rather than a confident signal in
+  either direction. Skipped (step 3). No order attempted.
+  Twenty-first cycle (2026-11-10, ~13:23 ET): checked position -- flat,
+  within trading hours. Fresh TradingView data (freshness check
+  passed: last bar 13:20 ET, streaming): a slow, low-volatility grind
+  down from the 12:55 bounce high (27637.25) to ~27596.5 (current),
+  -41 pts over 25 min with essentially no bounce -- drift, not genuine
+  momentum, still inside the same hour-long choppy range. Skipped
+  (step 3). No order attempted.
+  Twenty-second cycle (2026-11-10, ~13:38 ET): checked position --
+  flat, within trading hours. Fresh TradingView data (freshness check
+  passed: last bar 13:35 ET, streaming): a clean 4-consecutive-bar
+  rally from the 13:20 low (27594.5) to 27676.75 (current), +82 pts,
+  but no pullback yet, and still inside the same multi-hour choppy
+  range (27517-27732) that has reversed repeatedly. Per the
+  prefer-a-pullback and repeated-reversal-zone rules, waited rather
+  than chase the 4th straight green bar. Skipped (step 3). No order
+  attempted.
+  Twenty-third cycle (2026-11-10, ~13:53 ET): checked position --
+  flat, within trading hours. Fresh TradingView data (freshness check
+  passed: last bar 13:50 ET, streaming): the pullback we were waiting
+  for materialized (13:30-13:35: 27656 -> 27643.25) and resolved
+  upward to a fresh local high (27678.25, 13:50), now a shallow dip to
+  27669 (current). Read as BUY on the confirmed pullback, continuing
+  the uptrend off the 13:20 low (27594.5). Order: side buy, qty 3,
+  stop_loss_points 33.25, take_profit_points 16.75. risk_guard allowed
+  it (including the new trading-hours check). Entry filled clean,
+  single-shot at 27688.50; bracket computed from that fill: target
+  27705.25 (fill + 16.75), both legs ACCEPTED/WORKING, no rejection.
+  Incoming folder empty afterward. Order file cleaned up. Position
+  open: Long 3 MNQ 12-26 @ 27688.50 with a live bracket; outcome
+  pending a future check.
+  Position closed via take-profit (2026-11-10, 13:54:41 ET): exit at
+  exactly 27705.25, gain $100.50. Telemetry: 243.00. Account Flat.
+  Twenty-fourth cycle (2026-11-10, ~14:08 ET): checked position --
+  flat, within trading hours. Fresh TradingView data (freshness check
+  passed: last bar 14:05 ET, streaming): a genuine breakout above the
+  ~2-hour choppy range (27517-27699) to a fresh high of 27740.75
+  (14:05 ET), now a shallow pullback to 27716 (current). Read as BUY
+  on the pullback, continuing the breakout -- the first clean break of
+  new ground all cycle, not just another leg of the same chop. Order:
+  side buy, qty 3, stop_loss_points 33.25, take_profit_points 16.75.
+  risk_guard allowed it. Entry filled clean, single-shot at 27721.25;
+  bracket computed from that fill: target 27738.00 (fill + 16.75),
+  both legs ACCEPTED/WORKING, no rejection. Incoming folder empty
+  afterward. Order file cleaned up. Position open: Long 3 MNQ 12-26 @
+  27721.25 with a live bracket; outcome pending a future check.
+  Position closed via take-profit (2026-11-10, 14:09:32 ET): exit at
+  exactly 27738.00, gain $100.50. Telemetry: 343.50. Account Flat.
+  Twenty-fifth cycle (2026-11-10, ~14:23 ET): checked position --
+  flat, within trading hours. Fresh TradingView data (freshness check
+  passed: last bar 14:20 ET, streaming): same healthy pattern as the
+  last two cycles -- a real pullback (14:05-14:10: 27746.75 ->
+  27697.25) resolved upward to 27719 (14:20), now a shallow dip to
+  27707 (current). Read as BUY on the confirmed pullback, continuing
+  the uptrend. Order: side buy, qty 3, stop_loss_points 33.25,
+  take_profit_points 16.75. risk_guard allowed it.
+  **New bug found: the entry filled (confirmed in NT8's log at
+  27715.17), but `process_order` still defensively flattened on a
+  fill-confirmation timeout, closing almost immediately at 27715.75
+  (net +$3.50, essentially flat -- the safety net worked, but a real
+  trade opportunity was lost).** Root cause confirmed in
+  `oif_writer.tail_outgoing` (line 145, `if filename in updated_seen:
+  continue`): NT8 rewrites the SAME outgoing filename in place as an
+  order's status progresses (confirmed: `Sim101_2d501818...txt`
+  appeared twice tonight, once as `SUBMITTED`, later as `FILLED`, same
+  filename). `wait_for_entry_fill` reads that file once while it's
+  still `SUBMITTED`, marks the filename "seen", and never re-reads it
+  once NT8 rewrites it to `FILLED` -- so it waits out the full 5s
+  timeout and defensively flattens, even though the fill already
+  happened. This is intermittent: it only manifests when a poll
+  catches the file mid-transition (SUBMITTED first) rather than
+  already-FILLED on the first read, which is why earlier cycles
+  tonight didn't hit it. Not yet fixed -- flagged for the user to
+  decide on a fix (likely: `wait_for_entry_fill` should re-read a
+  filename it has already seen rather than permanently excluding it,
+  scoped to that wait loop only, without changing `tail_outgoing`'s
+  shared semantics used elsewhere for continuous fill-logging).
+  Telemetry: 347.00 (up from 343.50, the small net gain from the
+  premature close). Account Flat.
