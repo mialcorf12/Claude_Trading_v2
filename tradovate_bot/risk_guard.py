@@ -13,7 +13,11 @@ odd/tasks/tradovate-execution-bot.md):
     close, and is NEVER adjusted upward intraday even if equity rises.
   - Daily loss limit: $600 intraday, resets every day.
   - Consistency rule: 40% -- no single day's realized profit may exceed 40%
-    of the total realized profit counted toward the profit target.
+    of the $1250 PROFIT_TARGET. This is deliberately NOT 40% of profit
+    realized so far: comparing against the cumulative total falsely rejects
+    the very first profitable day of an evaluation, since any profit at all
+    is then 100% of the (near-zero) running total (see
+    odd/tasks/tradovate-execution-bot.md, 2026-11-10 overnight lockout).
   - Instrument: MNQ only, hard cap of 3 contracts per position.
 
 Fail-closed contract: `evaluate_order` returns `allow=False` for any
@@ -86,16 +90,15 @@ def check_max_loss(current_balance, eod_balance_last_close):
 
 def check_consistency(daily_profit_today, total_realized_profit):
     """Consistency rule: no single day's realized profit may exceed 40% of
-    total realized profit counted toward the $1250 target. With zero or
-    negative total profit there is nothing to be inconsistent with, so the
-    check passes (there is no profit to over-concentrate)."""
+    the fixed PROFIT_TARGET ($1250) -- not 40% of total_realized_profit.
+    total_realized_profit is still required and validated here (fail-closed)
+    even though it no longer drives the comparison, since it remains a
+    required account_state field other checks/consumers may depend on."""
     if not _is_finite_number(daily_profit_today) or not _is_finite_number(total_realized_profit):
         return False, "daily_profit_today or total_realized_profit is missing or not a finite number"
-    if total_realized_profit <= 0:
-        return True, "no realized profit yet, consistency rule not applicable"
-    if daily_profit_today > CONSISTENCY_PCT * total_realized_profit:
-        return False, "consistency rule breached: today's profit %.2f exceeds %.0f%% of total %.2f" % (
-            daily_profit_today, CONSISTENCY_PCT * 100, total_realized_profit)
+    if daily_profit_today > CONSISTENCY_PCT * PROFIT_TARGET:
+        return False, "consistency rule breached: today's profit %.2f exceeds %.0f%% of profit target %.2f" % (
+            daily_profit_today, CONSISTENCY_PCT * 100, PROFIT_TARGET)
     return True, "consistency rule satisfied"
 
 
