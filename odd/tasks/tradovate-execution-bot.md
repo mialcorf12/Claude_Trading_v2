@@ -1010,3 +1010,77 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   block this skip (TradingView bars are the actual data source) but worth
   confirming before the next cycle that does have a signal, since it could
   affect order routing through NT8 ATI. See cycles.log.jsonl.
+  Cycle (2026-11-10, ~22:55 ET, cron job `2c28893e`): **NT8 restarted mid-
+  session** (`Session Break` at 22:53:02 ET, log rolled over to
+  `log.20261110.00001.en.txt`) -- almost certainly from recompiling
+  `AccountTelemetryAddOn.cs` (F5) to pick up the earlier divergence-guard
+  fix. Two real findings from this restart, both logged here and in
+  cycles.log.jsonl, neither acted on yet (signal was chop anyway, see
+  below, so moot for this cycle):
+  1. `position_state.read_position_state` only reads the *newest*
+     `*.en.txt` by mtime (`find_latest_log_file`) -- the new log file has
+     no Sim101 execution/position lines yet, so it would return `unknown`,
+     not `Flat`, even though the real last known state (confirmed manually
+     against the prior log file) is still Flat since 18:52:06 ET.
+     `process_order` would fail-closed and refuse any entry on `unknown`
+     (safe direction), but this means every cycle is blocked until the
+     next real fill writes a position line into the new file -- a gap
+     worth knowing about, not a silent danger.
+  2. More serious: the AddOn restart re-ran `ResetDayBoundaryIfNeeded
+     (force: true)` at ~22:53 ET, which re-baselined `realizedPnlAtDayStart`
+     / `cashValueAtDayStart` to *right now* instead of recovering the true
+     17:00-ET day-start values. `tradovate_bot/state/account_telemetry.json`
+     now reads `daily_realized_pnl: 0`, `eod_balance_last_close: 95328.5`
+     (= current_balance) while `total_realized_profit` (unaffected,
+     NT8-side) is still -200.5 -- today's already-realized loss is now
+     invisible to both the $600 daily-loss check and the EOD drawdown
+     floor for the rest of this trading day. The divergence guard added
+     earlier tonight does NOT catch this, because both daily-delta sources
+     agree with each other post-restart (both reset to ~0 together) --
+     it only catches the two sources disagreeing with *each other*, not
+     with the true day-start baseline. This needs a real fix (persist
+     the day-start baseline to disk so a restart recovers it instead of
+     re-capturing "now") -- not applied yet, flagged for the user instead
+     of a unilateral design decision mid-cycle.
+  Fresh TradingView data (last bar 22:55 ET, streaming): price broke to a
+  new high (28198, up from the 28155-28186 range) on rising volume
+  (6487 on the 22:50 bar vs ~5960 avg), but `signals.evaluate_signal`
+  still flagged chop for both directions (3 swing highs/lows in the
+  trailing 9-bar window -- the window still spans the preceding
+  back-and-forth). Manual read agreed before running the code. Skipped,
+  no order attempted -- moot point for findings 1-2 above. See
+  cycles.log.jsonl.
+  Day-start baseline persistence fix designed and applied (2026-11-10,
+  ~23:00 ET, user request "diseña el fix de persistencia del baseline
+  ahora" then "si" to applying it): `AccountTelemetryAddOn.cs` now
+  persists a sidecar `account_telemetry_daystart.json` (same directory as
+  the telemetry file) with `trading_day_boundary` / `realized_pnl_at_day_
+  start` / `cash_value_at_day_start` every time it genuinely re-baselines
+  (first-ever run, or a real 17:00-ET rollover). `StartExporting` now calls
+  a new `InitializeDayBoundary`, which tries `TryReadDayStartSnapshot` for
+  today's boundary first and only falls back to capturing live account
+  values (the old, restart-unsafe behavior) when no valid same-day
+  snapshot exists. `WriteJsonAtomically` was parameterized to take a path
+  (it now writes two different files). Hand-rolled the snapshot reader
+  (`ExtractFlatJsonField`) rather than adding a JSON dependency, same
+  reasoning as the existing `SerializeFlatObject` -- it only ever re-parses
+  this AddOn's own writer output, never third-party JSON. Reviewed
+  structurally; cannot be compiled/run here (no NT8/.NET toolchain),
+  same unverified-by-build caveat as every other change to this file.
+  Deployed the corrected source to the live NT8 AddOns copy (confirmed via
+  diff) -- **not yet recompiled**, same pending F5 step as before; the
+  currently-running process (PID 18556, started 22:52:59 ET) still has
+  only the divergence-guard code, not this persistence fix, until the
+  user compiles again.
+  Backfilled tonight's real baseline so the *next* restart recovers it
+  correctly instead of starting over at zero: seeded
+  `tradovate_bot/state/account_telemetry_daystart.json` with
+  `trading_day_boundary=2026-11-10T17:00:00`, `realized_pnl_at_day_
+  start=0`, `cash_value_at_day_start=95529` -- reconstructed from
+  `total_realized_profit` being a restart-stable NT8 account counter
+  (confirmed unchanged across tonight's actual restart, still -200.5
+  before and after) and the only realized change since 17:00 ET being the
+  18:43-18:52 trade (-200.50): 95529 also matches the `eod_balance_last_
+  close` this same file showed earlier tonight, before the first restart
+  corrupted it. After the next recompile, `daily_realized_pnl` should read
+  -200.50, matching NT8, instead of 0.
