@@ -71,7 +71,7 @@ trabajar los 3 puntos que mencionas de arquitectura para escalar",
 ## Tasks
 1. [x] `position_state.py` + one-position-at-a-time + auto-flatten-on-close
    wiring into `executor.py`, test-first.
-2. [ ] `signals.py`: pullback-vs-chase + chop/repeated-reversal detection,
+2. [x] `signals.py`: pullback-vs-chase + chop/repeated-reversal detection,
    test-first.
 3. [ ] Config object replacing module-level globals in `risk_guard.py` and
    `executor.py`, test-first, keeping back-compatible env-var loading in
@@ -119,3 +119,27 @@ branch needed. Conventional commit messages, no AI co-author attribution
   lines quoted in this session's chat, not a fresh sample pulled from a
   real NT8 instance this session — unverified against a live `*.en.txt`
   file before trusting this for the funded account.
+- 2026-11-10: Task 2 done. Added `tradovate_bot/signals.py`: pure,
+  LLM-free guardrails over a list of OHLC bar dicts, codifying the two
+  rules established live this session from root-causing two real losing
+  trades. `check_chase_guard(bars, direction) -> GuardResult(flagged,
+  reason)` flags a candidate "buy"/"sell" as chasing when the trailing
+  8-bar window shows zero retracement and at least 4 consecutive closes
+  extending in that direction (cycle 18's exact scenario);
+  `check_chop_guard(bars) -> GuardResult(flagged, reason)` flags the
+  trailing 9-bar window (~45 min of 5-min bars) as chop when it contains
+  2+ swing highs/lows (cycle 20's scenario); `evaluate_signal(bars,
+  direction) -> SignalVerdict(clear, direction, reasons)` runs both and
+  blocks if either fires, with every firing guard's reason returned.
+  Both guards fail closed (flagged=True) on malformed bars, an
+  unrecognized direction, or fewer than 5 bars — never a silent "clean"
+  for insufficient data. Test-first: 15 new tests in
+  `tests/tradovate_bot/test_signals.py`, confirmed RED via collection
+  failure (`signals` module didn't exist), then GREEN, all 15 passing on
+  the first implementation attempt. Full suite:
+  `python -m pytest tests/tradovate_bot/ -v` -> 138 passed, 2 failed —
+  the same pre-existing, intentional uncommitted `CONSISTENCY_PCT=2.00`
+  override in `risk_guard.py` (not touched by this task), not a
+  regression. Caveat: not yet wired into the cron prompt or
+  `executor.py` — that integration is a separate decision the user will
+  make later; `signals.py` has no caller inside the bot yet, by design.
