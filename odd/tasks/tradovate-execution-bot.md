@@ -1536,3 +1536,616 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   regression. Updated the Cron procedure's steps 1, 6, 7, 10, and 12
   above to describe the new behavior and the NSSM staleness risk going
   forward.
+
+  Operations resumed (2026-11-11, ~08:56 ET, user request "arranquemos
+  operaciones"): pre-flight checked clean -- Flat (unchanged since
+  06:50:55 ET), `trader/orders.json` absent, `TradovateExecutor` Running
+  on the fresh post-restart process (PID 9056, started 08:52:52 ET, so it
+  has both of today's fixes and everything else committed). Recreated
+  the cron as job `6837166a`, same cadence (`3,13,23,33,43,53 * * * *`)
+  and prompt as job `e9e43f16` before it. Daily loss limit is still
+  breached (-10852.50 <= -600.00) and will stay that way until the next
+  17:00-ET boundary (~8 hours out) -- the cron will keep running and
+  correctly skip any entry attempt until then; that's expected, not a
+  bug to route around.
+
+  Cycle (2026-11-11, ~09:05 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running on the post-restart PID).
+  Flat, within hours. Fresh TradingView data (last bar 09:05 ET,
+  streaming): range-bound chop (3 swing points in the trailing 9-bar
+  window), both directions flagged -- moot regardless, since
+  `account_telemetry.json` was frozen at 09:01:52 ET, the instant before
+  the user reset Sim101 in NT8 (user request "para nuestras pruebas
+  podemos ignorar ese -$10,852.50?" -> confirmed: reset the Sim101
+  balance in NT8 rather than touching risk_guard code). The divergence
+  guard added 2026-11-10 is withholding fresh exports because CashValue
+  jumped at the reset while the AddOn's in-memory baseline didn't -- by
+  design, not a bug. Already deleted
+  `tradovate_bot/state/account_telemetry_daystart.json` so the AddOn
+  can't recover the stale pre-reset baseline on its next start. No order
+  attempted (telemetry past the 30s staleness threshold -> fails closed
+  on missing account_state regardless of signal).
+
+  Reset completed, baseline clean (2026-11-11, ~09:06 ET, user "listo 3"
+  -- AddOn recompiled/restarted): `account_telemetry.json` now fresh
+  (`updated_at` 09:06:32) and consistent -- `daily_realized_pnl: 0`,
+  `current_balance: 100000` (Sim101's default fresh-reset starting
+  balance), `total_realized_profit: 0`. The AddOn wrote a new
+  `account_telemetry_daystart.json` snapshot matching
+  (`cash_value_at_day_start: 100000`, `realized_pnl_at_day_start: 0`,
+  same `2026-11-10T17:00:00` boundary -- correct, since the real
+  trading-day boundary hasn't actually rolled over, only the account
+  itself was reset). Daily loss limit is no longer breached -- testing
+  can resume placing entries normally.
+
+  Cycle (2026-11-11, ~09:08 ET, manual run, user request "dispara una
+  ejecucion de forma manual"): sanity check passed (branch v2.1,
+  `TradovateExecutor` Running, `trader/orders.json` absent). Flat, within
+  hours. Fresh TradingView data (last bar 09:05 ET, streaming):
+  range-bound chop 28320-28406, 3 swing points in the trailing 9-bar
+  window, both directions flagged by `signals.evaluate_signal`. Manual
+  read agreed. Skipped, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~09:16 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 09:15
+  ET, streaming): still the same 28320-28406 range, 4 swing points in
+  the trailing 9-bar window. `signals.evaluate_signal` flagged chop for
+  both directions. Manual read agreed. Skipped, no order attempted. See
+  cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~09:26 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 09:25
+  ET, streaming): still the same 28320-28406 range, 4 swing points in
+  the trailing 9-bar window. `signals.evaluate_signal` flagged chop for
+  both directions. Manual read agreed. Skipped, no order attempted. See
+  cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~09:36 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 09:35
+  ET, streaming): extreme-volume whipsaw -- one bar printed 79079 volume
+  (vs ~8692 avg), spiking to a new high 28426.25 then crashing to
+  28299.25/28308.5, likely news-driven. `signals.evaluate_signal` flagged
+  chop for both directions (3 swing points). Manual read agreed strongly
+  -- not a move to chase blindly either way. Skipped, no order attempted.
+  Worth watching next cycle for whether this resolves into a real
+  direction. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~09:46 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 09:45
+  ET, streaming): the whipsaw resolved decisively DOWN with sustained
+  heavy volume (76175, 69691, 11414 vs ~13256 avg), from the 28426.25
+  spike high to 28230.75 low, close 28253.25. But the spike-up bar is
+  still inside the trailing 9-bar window, counting as a swing high --
+  `signals.evaluate_signal` still flagged chop for both directions (3
+  swing points). Manual read: the decline looks real and volume-
+  confirmed, but respected the guard rather than overriding a violent,
+  still-fresh move. Skipped, no order attempted. See cycles.log.jsonl.
+
+  **First healthy trade of the session (2026-11-11, ~09:56 ET, cron job
+  `6837166a`)** -- validates both of today's fixes live: sanity check
+  passed. Flat, within hours. Fresh TradingView data (last bar 09:55 ET,
+  streaming): the spike-up bar finally aged out of the trailing 9-bar
+  window; `signals.evaluate_signal` returned clear=True both directions.
+  Manual read: sustained, volume-confirmed decline from the 28426.25
+  spike (76175/69691/66919/63975 vol vs ~17153 avg) to 28243.5 (tick
+  28232.75) -- judged SELL. Wrote `trader/orders.json`; this session's
+  own `run_once()` found nothing (the `TradovateExecutor` service won
+  the race and claimed it first on its own poll) -- confirms the
+  claim-file fix works exactly as intended, exactly one process handled
+  it. Verified in the NT8 log: single fill, SELL 3 MNQ @ 28286, Short
+  qty=3 (not duplicated), immediately followed by a correct OCO bracket
+  (STOPMARKET BUY 3 @ 28319.25 = 33.25 pts, LIMIT BUY 3 @ 28269.25 =
+  16.75 pts) -- confirms the service is running current code with the
+  bracket-from-confirmed-fill logic. Both legs Accepted/Working. See
+  cycles.log.jsonl.
+
+  **Trade closed, take-profit hit (2026-11-11, ~09:57 ET)**: the LIMIT
+  leg filled completely at 28269.25 just ~49s after entry, OCO
+  auto-cancelled the stop; position back to Flat. +$100.50 realized --
+  exactly the $100 TP target (16.75 pts x 3 x $2). Confirmed in
+  `account_telemetry.json` (`daily_realized_pnl: 100.5`,
+  `current_balance: 100100.5`).
+
+  Cycle (2026-11-11, ~10:06 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 10:05
+  ET, streaming): price bounced off the 28198.75 low back to 28318.25,
+  then pulled back to 28302/28304.75 (tick) -- fresh bounce still reads
+  choppy (3 swing points). `signals.evaluate_signal` flagged chop for
+  both directions. Manual read agreed. Skipped, no new order attempted.
+  See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~10:16 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 10:15
+  ET, streaming): declining again after the bounce (28318.25 ->
+  28302.75 -> 28276 -> 28282.75, tick 28291), still consolidating in the
+  post-crash zone (3 swing points). `signals.evaluate_signal` flagged
+  chop for both directions. Manual read agreed. Skipped, no order
+  attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~10:26 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 10:25
+  ET, streaming): consolidating in the 28261-28347 range after the
+  earlier crash/bounce, 4 swing points in the trailing 9-bar window, no
+  clean break. `signals.evaluate_signal` flagged chop for both
+  directions. Manual read agreed. Skipped, no order attempted. See
+  cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~10:36 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 10:35
+  ET, streaming): a strong push up on high volume (28293.25 -> 28373.75
+  -> 28380, vol 37864/30001 vs ~26189 avg), but the trailing 9-bar window
+  still carries too much zigzag from the earlier crash/bounce (4 swing
+  points). `signals.evaluate_signal` flagged chop for both directions.
+  Manual read agreed. Skipped, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~10:46 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 10:45
+  ET, streaming): strong continued rally to a new session high 28443.5
+  (above the earlier 28426.25 spike), high volume (32165/29044 vs
+  ~27720 avg), but the window still carries chop from the earlier crash
+  (3 swing points). `signals.evaluate_signal` flagged chop for both
+  directions. Manual read agreed. Skipped, no order attempted. (Also:
+  `gh` CLI installed and authenticated this session as `mialcorf12` --
+  unrelated to the trading loop, user request.) See cycles.log.jsonl.
+
+  **Second healthy trade (2026-11-11, ~10:56 ET, cron job `6837166a`)**:
+  sanity check passed. Flat, within hours. Fresh TradingView data (last
+  bar 10:55 ET, streaming): strong, consistent rally, each bar a new
+  high (28391 -> 28428 -> 28467 -> 28512), high volume throughout
+  (32165/26546/35269 vs ~29329 avg). `signals.evaluate_signal` returned
+  clear=True both directions; manual read judged BUY. Wrote
+  `trader/orders.json`; `TradovateExecutor` claimed and processed it
+  first again (this session's own `run_once()` found nothing). Verified
+  in NT8 log: single fill, BUY 3 MNQ @ 28533.5 on Sim101, Long qty=3,
+  correct OCO bracket (STOPMARKET SELL 3 @ 28500.25 = 33.25 pts, LIMIT
+  SELL 3 @ 28550.25 = 16.75 pts), both Accepted/Working. Noted: the same
+  shared NT8 log also showed unrelated activity on
+  `TAKEPROFIT567008447` (the user's separate real account) around the
+  same time -- not caused by this bot (every OIF command this bot sends
+  targets `Sim101` explicitly); left untouched per standing instruction.
+  See cycles.log.jsonl.
+
+  **Trade closed, take-profit hit again (2026-11-11, ~10:59 ET)**: the
+  LIMIT leg filled completely at 28550.25 (entry 28533.5), OCO
+  auto-cancelled the stop; +$100.50, total daily realized now $201.
+
+  **Third healthy trade (2026-11-11, ~11:06 ET, cron job `6837166a`)**:
+  sanity check passed. Flat, within hours. Fresh TradingView data (last
+  bar 11:05 ET, streaming): a shallow pullback (28554.5 -> 28506.25)
+  within the larger sustained uptrend. `signals.evaluate_signal` returned
+  clear=True both directions; manual read judged BUY (buy-the-dip
+  continuation). Wrote `trader/orders.json`; `TradovateExecutor` claimed
+  it first again. Verified in NT8 log: single fill, BUY 3 MNQ @
+  28491.75 on Sim101, Long qty=3, correct OCO bracket (STOPMARKET SELL 3
+  @ 28458.5 = 33.25 pts, LIMIT SELL 3 @ 28508.5 = 16.75 pts), both
+  Accepted/Working. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~11:16 ET, cron job `6837166a`): Long 3 @ 28491.75
+  still open from last cycle (hasn't hit stop 28458.5 or target 28508.5
+  yet) -- one-position-at-a-time guard blocks any new entry regardless
+  of signal. Tick 28503, close to the target. No new order attempted;
+  just holding. See cycles.log.jsonl.
+
+  **Trade closed, take-profit hit a third time (2026-11-11, ~11:20 ET)**:
+  the LIMIT leg filled completely at 28508.5 (entry 28491.75); +$100.50,
+  total daily realized now $301.50 -- three winning trades in a row.
+
+  **Fourth healthy trade (2026-11-11, ~11:26 ET, cron job `6837166a`)**:
+  sanity check passed. Flat, within hours. Fresh TradingView data (last
+  bar 11:25 ET, streaming): a pullback from 28554.5 to 28461.75, then
+  resumed up to 28544.5/28532.75. `signals.evaluate_signal` returned
+  clear=True both directions; manual read judged BUY (buy-the-dip
+  continuation, same pattern as the prior two wins). Wrote
+  `trader/orders.json`; `TradovateExecutor` claimed it first again.
+  Verified in NT8 log: single fill, BUY 3 MNQ @ 28541.75 on Sim101, Long
+  qty=3, correct OCO bracket (STOPMARKET SELL 3 @ 28508.5 = 33.25 pts,
+  LIMIT SELL 3 @ 28558.5 = 16.75 pts), both Accepted/Working. See
+  cycles.log.jsonl.
+
+  **Trade closed, take-profit hit a fourth time (2026-11-11, ~11:27
+  ET)**: the LIMIT leg filled completely at 28558.5 (entry 28541.75);
+  +$100.50, total daily realized now $402 -- four winning trades in a
+  row.
+
+  Cycle (2026-11-11, ~11:36 ET, cron job `6837166a`): sanity check
+  passed (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 11:35
+  ET, streaming): new high 28573.25, pulled back to 28527.75/28534.75
+  (tick 28528.75) -- the pullback-then-continuation rhythm has gotten
+  choppier (4 swing points). `signals.evaluate_signal` flagged chop for
+  both directions. Manual read agreed. Skipped, no new order attempted.
+  See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~11:46 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 11:45
+  ET, streaming): consolidating near the highs (28527-28575), 4 swing
+  points in the trailing 9-bar window, no clean break.
+  `signals.evaluate_signal` flagged chop for both directions. Manual
+  read agreed. Skipped, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~11:56 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 11:55
+  ET, streaming): new high 28600.5 (tick 28588.5), 3 bars straight with
+  no pullback yet, but the window still carries the recent zigzag (3
+  swing points). `signals.evaluate_signal` flagged chop for both
+  directions. Manual read agreed. Skipped, no order attempted. See
+  cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~12:06 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 12:05
+  ET, streaming): new high 28624 (tick 28610.5), same persistent pattern
+  -- the window still carries too much recent zigzag (3 swing points).
+  `signals.evaluate_signal` flagged chop for both directions. Manual
+  read agreed. Skipped, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~12:16 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 12:15
+  ET, streaming): pulled back from 28624 to 28574.75, bounced to
+  28603.75/28604.5 (tick) -- still consolidating near the highs (3
+  swing points). `signals.evaluate_signal` flagged chop for both
+  directions. Manual read agreed. Skipped, no order attempted. See
+  cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~12:26 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent). Flat, within hours. Fresh TradingView data (last bar 12:25
+  ET, streaming): new high 28659.5 (tick 28647), same persistent
+  consolidation pattern near the highs (4 swing points).
+  `signals.evaluate_signal` flagged chop for both directions. Manual
+  read agreed. Skipped, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~12:36 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `TradovateExecutor` Running, `trader/orders.json`
+  absent, last NT8 log line still Flat from 11:27:20:473 ET). Flat,
+  within hours. Fresh TradingView data (last bar 12:35 ET close
+  28651.75, streaming): new high 28659.5 within the 28261-28659.5
+  consolidation zone, still the same persistent pattern -- 3 direction
+  reversals in the trailing 9-bar window. `signals.evaluate_signal`
+  flagged chop for both directions. Manual read agreed. Skipped, no
+  order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~12:45 ET, cron job `6837166a`): sanity check found
+  `TradovateExecutor` (PID 19948) had started at 08:52:52 ET, **before**
+  `e95e179` (08:53:47, chop threshold) and `eaca9ca` (08:53:59, order-file
+  race fix) landed -- stale code per step 10, same class as the
+  2026-11-11 incident. Restarted it (new PID 11064, 12:45:51 ET) before
+  trusting it. Flat, within hours. Fresh TradingView data (last bar
+  12:45 ET close 28641.5, streaming): break to new high 28666.25, one
+  confirmed pullback to 28633.75, now basing there -- HH/HL structure,
+  not chop (matches cycle 23's winning pattern). `signals.evaluate_signal`
+  clear for both directions (chase + chop); manual read called BUY.
+  Wrote `trader/orders.json` (qty 3, SL 33.25 pts / TP 16.75 pts + bars).
+  The restarted NSSM service claimed and filled it before this session's
+  own `run_once()` ran: BUY 3 MNQ filled avg 28643.666667 (partial fills
+  1@28643.5 + 2@28643.75), bracket sized from the confirmed fill and
+  working (SL 28610.5 / TP 28660.5, OCO-ff4f5871). Verified against NT8's
+  own log. Unrelated same-window activity on `TAKEPROFIT567008447`
+  confirmed untouched by any OIF command this cycle. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~12:56 ET, cron job `6837166a`): sanity check passed
+  (branch v2.1, `check_trading_hours`/`evaluate_signal`/
+  `read_position_state` all present). `TradovateExecutor` PID 11064
+  confirmed current (started 12:45:51, after the 08:53:59 commit) -- no
+  restart needed. Position NOT flat: Long 3 MNQ avg 28643.666667 from the
+  prior cycle's BUY, bracket still Working (SL 28610.5 / TP 28660.5,
+  OCO-ff4f5871, neither hit). One-position-at-a-time rule -- no new
+  signal evaluated, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~13:05 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current (started 12:45:51). NT8 log
+  showed the prior cycle's BUY stopped out at 28610.5 (13:02:14 ET) --
+  entry avg 28643.666667, 3 contracts, ~-$199; OCO TP leg (28660.5)
+  cancelled correctly on the fill. Flat again, within hours. Fresh
+  TradingView data (last bar 13:05 ET close 28612.75, streaming): price
+  whipsawed down from the 28666.25 high through repeated small swings
+  (28666.25/28635.75/28661.25/28633.75/28653.25/28622.5/28653.75/
+  28604.75) -- 4 reversals in the trailing 9-bar window.
+  `signals.evaluate_signal` flagged chop for both directions. Manual read
+  agreed. Skipped, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~13:15 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 13:15 ET close 28648.75, streaming): still
+  whipsawing in the same 28604-28666 range, 4 reversals in the trailing
+  9-bar window. `signals.evaluate_signal` flagged chop for both
+  directions. Manual read agreed. Skipped, no order attempted. See
+  cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~13:25 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 13:25 ET close 28676.25, streaming): new
+  breakout high 28685 past the prior chop range -- but zero pullback yet
+  (2 bars since the breakout, both holding near the highs). Would be
+  chasing, not a confirmed-pullback entry (cycle 18's lesson).
+  `signals.evaluate_signal` also still flagged chop (4 reversals in the
+  trailing 9-bar window, carrying the pre-breakout whipsaw). Manual read
+  agreed with the skip either way. No order attempted; watching for a
+  pullback next cycle. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~13:35 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 13:35 ET close 28663.5, streaming): breakout
+  high extended to 28691, then 3 consecutive lower-high/lower-low bars
+  (28691/28688.25/28675.25 highs, 28671.75/28670.25/28662.25 lows, no
+  bounce bar yet) pulling back right into the 28604-28666 zone that
+  already produced chop and the earlier SL hit this session.
+  `signals.evaluate_signal` read clear for both directions (no chase, no
+  chop by the code's current thresholds), but manual read overrode it
+  per step 3 -- a still-falling pullback retracing into known resistance
+  isn't a confirmed pullback entry yet. Skipped, no order attempted;
+  watching for a confirmed bounce bar next cycle. See cycles.log.jsonl.
+
+  Manual cycle (2026-11-11, ~13:37 ET, off-schedule, requested directly):
+  sanity check passed, `TradovateExecutor` PID 11064 still current. Flat,
+  within hours. Fresh TradingView data showed the same forming bar as the
+  prior cycle (t=1794422100) now bouncing intrabar off 28662.25 (close
+  28665.5, high 28676.75) -- but still no CLOSED bar with a higher low
+  (low sequence 28671.75/28670.25/28662.25 still lower-low).
+  `signals.evaluate_signal` clear both directions; manual read held the
+  skip from the prior cycle -- waiting for the bar to actually close with
+  a confirmed higher low before treating this as the pullback entry. No
+  order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~13:45 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 13:45 ET, streaming): the pullback finally
+  confirmed -- bottomed at 28660.5, then a full-range bullish reversal
+  bar closed at 28691.25 (matching/exceeding the prior 28691 high), and
+  the next bar extended further to 28696.5 with no pullback. This is the
+  confirmed-pullback-then-resumption pattern watched for since the last
+  two cycles. `signals.evaluate_signal` clear both directions; manual
+  read called BUY. Wrote `trader/orders.json` (qty 3, SL 33.25 pts / TP
+  16.75 pts + bars); `TradovateExecutor` claimed and filled it: BUY 3 MNQ
+  @ 28693.25, bracket sized from the confirmed fill and working (SL
+  28660.0 / TP 28710.0, OCO-310fccf1). Verified against NT8's own log.
+  Unrelated same-window fill on `TAKEPROFIT567008447` confirmed untouched
+  by any OIF command this cycle. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~13:55 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Position NOT flat: Long 3
+  MNQ avg 28693.25 from the prior cycle's BUY, bracket still Working (SL
+  28660.0 / TP 28710.0, OCO-310fccf1, neither hit). One-position-at-a-time
+  rule -- no new signal evaluated, no order attempted. See
+  cycles.log.jsonl.
+
+  Manual cycle (2026-11-11, ~13:56 ET, off-schedule, requested directly):
+  sanity check passed, `TradovateExecutor` PID 11064 still current. NT8
+  log showed the open position was closed at 13:56:08:171 via **"Chart
+  Trader close position"** -- a manual close in NT8's UI, NOT by this
+  session or the bot's code. It cancelled the OCO bracket (SL 28660.0 /
+  TP 28710.0, neither had been hit) and market-sold to flatten at
+  28666.25, realizing ~-$162 (better than the -33.25pt SL would have
+  been). Flagged for user confirmation. Flat, within hours. Fresh
+  TradingView data (last bar 13:55 ET close 28662.75, streaming): rolled
+  over from the 28697.25 high into a 3-bar decline (28679.25/28675.75/
+  28662.75), 3 reversals in the trailing 9-bar window.
+  `signals.evaluate_signal` flagged chop for both directions. Manual read
+  agreed. Skipped, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~13:58 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 13:58 ET close 28627.75, streaming): hard
+  rollover from the 28697.25 high, 5 straight declining bars with zero
+  retracement down to 28621.25 (lower highs and lower lows each bar, no
+  bounce). `signals.evaluate_signal` clear both directions (code's
+  8-bar chase-guard window still includes the earlier bounce at bar 25),
+  but manual read overrode it for SELL -- this is a chase, mirroring
+  cycle 18's lesson in the opposite direction. Skipped, no order
+  attempted; waiting for a confirmed bounce-then-resume-down. See
+  cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~14:08 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 14:05 ET close 28574.25, streaming): decline
+  extended further, still no confirmed bounce -- 28697.25 high down to
+  28563.75 low over 7-8 straight red bars (-123+ pts), only brief wicks,
+  no real retracement. `signals.evaluate_signal` clear both directions
+  (code), but manual read held the same chase-override from the prior
+  cycle -- entering SELL now would be chasing an already-extended move
+  (cycle 18 lesson, mirrored). Skipped, no order attempted; still
+  watching for a confirmed bounce/basing bar. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~14:18 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 14:18 ET close 28549.25, streaming): decline
+  paused -- last 2 bars show low-volume consolidation (667 vs ~17-26k
+  prior) near the lows, with a slightly higher low (28547.5 > 28534.75),
+  possible basing but no confirmed reversal bar yet.
+  `signals.evaluate_signal` clear both directions, but manual read held:
+  not a confirmed BUY (no breakout bar) and SELL would still be chasing
+  an already-extended move (-150+ pts from the 28697.25 high). Skipped,
+  no order attempted; watching for either a confirmed bullish reversal
+  or a fresh continuation impulse down. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~14:28 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 14:28 ET close 28567.5, streaming):
+  continued basing in a tight range (28534.75-28578.5) over the last 4
+  bars, declining volume -- still no breakout bar in either direction.
+  `signals.evaluate_signal` clear both directions; manual read agreed
+  there is no confirmed entry trigger yet. Skipped, no order attempted;
+  watching for a breakout from this consolidation range. See
+  cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~14:38 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 14:38 ET close 28557.25, streaming): still
+  ranging in the same 28534.75-28588 box for 6+ bars, oscillating without
+  a breakout. `signals.evaluate_signal` clear both directions; manual
+  read agreed there is no confirmed entry trigger yet. Skipped, no order
+  attempted; still watching for a breakout. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~14:48 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 14:48 ET close 28569, streaming): still
+  ranging in the 28534.75-28588 box, 3 direction reversals in the
+  trailing 9-bar window. `signals.evaluate_signal` flagged chop for both
+  directions. Manual read agreed. Skipped, no order attempted. See
+  cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~14:58 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 14:58 ET close 28547.75, streaming):
+  drifting toward the lower end of the same 28534.75-28588 box without
+  breaking it, 3 direction reversals in the trailing 9-bar window.
+  `signals.evaluate_signal` flagged chop for both directions. Manual read
+  agreed. Skipped, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~15:08 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 15:08 ET close 28528, streaming): broke
+  below the 28534.75 range low to 28516, but trailing 9-bar window still
+  flags 3 reversals (chop) and the last bar is nearly flat right at the
+  new low -- no confirmed continuation impulse yet.
+  `signals.evaluate_signal` flagged chop for both directions. Manual read
+  agreed. Skipped, no order attempted; watching for confirmation of the
+  breakdown. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~15:18 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 15:18 ET close 28515.25, streaming):
+  breakdown strengthening -- last 3 bars 28529 -> 28524.5 -> 28514.5
+  (wide-range down bar, low 28499.25) -> 28515.25, but trailing 9-bar
+  window still flags 4 reversals (chop, carries the pre-breakdown
+  zigzag). `signals.evaluate_signal` flagged chop for both directions.
+  Manual read agreed with the skip. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~15:28 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 15:28 ET close 28516, streaming): the
+  breakdown impulse stalled, now oscillating in a tighter 28499.25-28533
+  range, 5 reversals in the trailing 9-bar window.
+  `signals.evaluate_signal` flagged chop for both directions. Manual read
+  agreed. Skipped, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~15:38 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 15:38 ET close 28514.5, streaming): very
+  choppy, oscillating in the 28495.5-28534.75 range, 7 reversals in the
+  trailing 9-bar window. `signals.evaluate_signal` flagged chop strongly
+  for both directions. Manual read agreed. Skipped, no order attempted.
+  See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~15:48 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 15:48 ET close 28452.75, streaming):
+  volume-confirmed breakdown -- 28513.5 -> 28464 -> 28452.75, break bar
+  volume 24396 vs ~14k average. `signals.evaluate_signal` still flagged
+  chop (6 reversals in the trailing 9-bar window, carries the earlier
+  zigzag). Every prior breakout attempt this choppy afternoon has stalled
+  back into chop, so held the skip pending the window actually clearing.
+  No order attempted; watching for continued follow-through. See
+  cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~15:58 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 15:58 ET close 28477.5, streaming): after a
+  new low (28442.5) the move bounced to 28483.75 and is now consolidating
+  without clear direction, 6 reversals in the trailing 9-bar window.
+  `signals.evaluate_signal` flagged chop for both directions. Manual read
+  agreed. Skipped, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~16:08 ET, cron job `6837166a`): sanity check passed,
+  `TradovateExecutor` PID 11064 still current. Flat, within hours. Fresh
+  TradingView data (last bar 16:08 ET close 28461.5, streaming):
+  low-conviction drift lower, volume tapering sharply (last bar 181 vs
+  ~14k average), 5 reversals in the trailing 9-bar window.
+  `signals.evaluate_signal` flagged chop for both directions. Manual read
+  agreed. Skipped, no order attempted. See cycles.log.jsonl.
+
+  **CORRECTION (2026-11-11, ~16:16 ET)**: the ~16:08 ET cycle above stated
+  `within_hours: true` without actually calling
+  `risk_guard.check_trading_hours()` -- verified just now that the
+  market was already closed at that point (daily close window is
+  16:00-18:00 ET Mon-Thu). Outcome unaffected (skip either way, no
+  order, position was Flat so no auto-flatten was owed), but the stated
+  reason was wrong (chop, not market-closed). Will call
+  `check_trading_hours()` explicitly before fetching data on every
+  remaining cycle, per step 1/2 of this procedure. Next trading window
+  opens 18:00 ET.
+
+  Cycle (2026-11-11, ~16:25 ET, cron job `6837166a`): checked
+  `check_trading_hours()` explicitly this time -- market closed (daily
+  close window 16:00-18:00 ET Mon-Thu). Position confirmed Flat (NT8
+  log). No data fetched, no order attempted per step 2. See
+  cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~16:37 ET, cron job `6837166a`): `check_trading_hours()`
+  still returns market closed. Position confirmed Flat. No data fetched,
+  no order attempted. See cycles.log.jsonl.
+
+  Cron recreated (2026-11-11, ~16:52 ET, new session, user request "verifica
+  la posicion actual contra el log real de NT8 antes de recrear el cron"):
+  previous job `6837166a` was gone (session-only, died with the prior
+  session). Verified against the real NT8 log before recreating: newest
+  `log.20261111.00001.en.txt` had no position lines (just rotated at
+  16:39:09), fell back to `log.20261111.00000.en.txt` per step 1 -- last
+  position event there is Flat at 13:56:08 ET, nothing since. Market closed
+  (16:52 ET is inside the 16:00-18:00 ET Mon-Thu window). `TradovateExecutor`
+  confirmed Running (PID 11064/python PID 8220, started 12:45:51 ET), later
+  than every `tradovate_bot/*.py` mtime (newest 08:45:41 ET) -- not stale.
+  `NT8_ACCOUNT_ID=Sim101` confirmed (not the real account). Recreated the
+  cron as job `5c0c5876`, same cadence (`3,13,23,33,43,53 * * * *`) and
+  procedure as job `6837166a` before it (built from this doc's Cron
+  procedure section, per its own instruction, since the prompt text itself
+  is never persisted anywhere).
+
+  Cycle (2026-11-11, ~17:05 ET, cron job `5c0c5876`): branch v2.1 confirmed,
+  `check_trading_hours`/`signals`/`position_state` present in live code.
+  `TradovateExecutor` PID 11064 unchanged since last validation (not stale).
+  Position confirmed Flat (NT8 log, last event 13:56:08 ET). Market closed
+  (17:05 ET inside the 16:00-18:00 ET Mon-Thu window). No data fetched, no
+  order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~17:15 ET, cron job `5c0c5876`): branch v2.1 confirmed.
+  `TradovateExecutor` PID 11064 unchanged. Position confirmed Flat (NT8 log,
+  last event 13:56:08 ET). Market closed (17:15 ET inside the 16:00-18:00 ET
+  Mon-Thu window). No data fetched, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~17:25 ET, cron job `5c0c5876`): branch v2.1 confirmed.
+  `TradovateExecutor` PID 11064 unchanged. Position confirmed Flat (NT8 log,
+  last event 13:56:08 ET). Market closed (17:25 ET inside the 16:00-18:00 ET
+  Mon-Thu window). No data fetched, no order attempted. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~17:35 ET, cron job `5c0c5876`): branch v2.1 confirmed.
+  `TradovateExecutor` PID 11064 unchanged. Position confirmed Flat (NT8 log,
+  last event 13:56:08 ET). Market closed (17:35 ET inside the 16:00-18:00 ET
+  Mon-Thu window). `trader/orders.json` absent. No data fetched, no order
+  attempted. See cycles.log.jsonl.
+
+  **Reopen time changed 18:00 -> 18:15 ET (2026-11-11, ~17:44 ET, user
+  request: "a las 18:00 ET aun no tenemos suficiente informacion de velas,
+  cambia de forma permanente el reinicio de operaciones validas despues de
+  las 18:15 ET")**: `MARKET_REOPEN_TIME` in `tradovate_bot/risk_guard.py`
+  changed from `time(18, 0)` to `time(18, 15)`. This constant is shared by
+  both the daily Mon-Thu reopen and the Sunday weekend reopen (there is no
+  separate constant for each), so both moved symmetrically -- the same
+  thin-candle-history reasoning applies equally to the Sunday reopen.
+  Updated the module/function docstrings and the `check_trading_hours`
+  rejection message text to match. Test-first: updated
+  `tests/tradovate_bot/test_risk_guard.py`'s two reopen-boundary tests
+  (Mon-Thu and Sunday) to assert 18:00 is now closed and 18:15 is open;
+  confirmed RED against the pre-change code (`pytest -k trading_hours` ->
+  2 failed as expected), then GREEN after the constant change (13/13
+  trading-hours tests passed). Full suite:
+  `python -m pytest tests/tradovate_bot/ -q` -> 163 passed, 2 failed --
+  both the same pre-existing `CONSISTENCY_PCT` live-drift mismatches as
+  every other run this session (see [[tradovate-bot-overnight-session]]),
+  unrelated. Recreated the cron (job `5c0c5876` -> `83caf733`, same
+  cadence) so its prompt text no longer states the stale 18:00 boundary --
+  the actual gating always came from `check_trading_hours()`, so behavior
+  was never wrong, only the prompt's literal description. Not yet
+  committed (git working tree only).

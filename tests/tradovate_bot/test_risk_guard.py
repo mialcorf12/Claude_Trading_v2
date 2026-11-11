@@ -7,9 +7,12 @@ Lucid Trading 25k Flex Eval parameters under test:
   - Consistency rule: 40% (no single day's realized profit may exceed 40% of
     the $1250 PROFIT_TARGET -- not 40% of profit realized so far, which would
     falsely reject the very first profitable day of an evaluation).
-  - Trading hours: closed daily 16:00-18:00 ET Monday-Thursday, and closed
-    from Friday 16:00 ET through Sunday 18:00 ET (weekend). All positions
-    must be flat before the daily/weekend close.
+  - Trading hours: closed daily 16:00-18:15 ET Monday-Thursday, and closed
+    from Friday 16:00 ET through Sunday 18:15 ET (weekend). All positions
+    must be flat before the daily/weekend close. The 18:15 reopen (not
+    18:00) is deliberate: by 18:00 there isn't enough fresh 5-minute candle
+    history yet to judge a signal, so the extra 15 minutes lets bars
+    accumulate before the bot resumes evaluating entries.
   - Position sizing: MNQ only, hard cap 3 contracts.
   - Fail-closed on any missing/ambiguous/malformed account-state input.
 
@@ -157,8 +160,15 @@ def test_trading_hours_closed_exactly_at_1600():
     assert decision.allow is False
 
 
-def test_trading_hours_open_immediately_after_reopen_mon_thu():
+def test_trading_hours_closed_at_1800_before_new_reopen_mon_thu():
+    # 18:00 is no longer the reopen -- it moved to 18:15, see module docstring
     now = datetime(2026, 11, 9, 18, 0, tzinfo=EASTERN)
+    decision = _evaluate(base_order(), base_account_state(), now=now)
+    assert decision.allow is False
+
+
+def test_trading_hours_open_immediately_after_reopen_mon_thu():
+    now = datetime(2026, 11, 9, 18, 15, tzinfo=EASTERN)
     decision = _evaluate(base_order(), base_account_state(), now=now)
     assert decision.allow is True
 
@@ -188,8 +198,15 @@ def test_trading_hours_closed_sunday_before_reopen():
     assert decision.allow is False
 
 
-def test_trading_hours_open_sunday_after_reopen():
+def test_trading_hours_closed_sunday_at_1800_before_new_reopen():
+    # 18:00 is no longer the reopen -- it moved to 18:15, see module docstring
     now = datetime(2026, 11, 15, 18, 0, tzinfo=EASTERN)
+    decision = _evaluate(base_order(), base_account_state(), now=now)
+    assert decision.allow is False
+
+
+def test_trading_hours_open_sunday_after_reopen():
+    now = datetime(2026, 11, 15, 18, 15, tzinfo=EASTERN)
     decision = _evaluate(base_order(), base_account_state(), now=now)
     assert decision.allow is True
 

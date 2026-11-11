@@ -20,10 +20,13 @@ odd/tasks/tradovate-execution-bot.md):
     odd/tasks/tradovate-execution-bot.md, 2026-11-10 overnight lockout).
   - Instrument: MNQ only, hard cap of 3 contracts per position.
   - Trading hours (confirmed by the user, 2026-11-10): closed daily
-    16:00-18:00 ET Monday-Thursday, and closed from Friday 16:00 ET
-    through Sunday 18:00 ET (weekend) -- all positions must be flat
+    16:00-18:15 ET Monday-Thursday, and closed from Friday 16:00 ET
+    through Sunday 18:15 ET (weekend) -- all positions must be flat
     before the daily/weekend close, and no new entry may be placed while
-    closed.
+    closed. The 18:15 reopen (not 18:00, changed 2026-11-11 per the user)
+    is deliberate: at 18:00 there isn't enough fresh 5-minute candle
+    history yet to judge a signal, so the extra 15 minutes lets bars
+    accumulate before the bot resumes evaluating entries.
 
 Fail-closed contract: `evaluate_order` returns `allow=False` for any
 missing, malformed, or ambiguous input. There is no code path that defaults
@@ -40,7 +43,7 @@ PROFIT_TARGET = 1250.0
 ALLOWED_SYMBOL = "MNQ"
 MAX_CONTRACTS = 3
 MARKET_CLOSE_TIME = time(16, 0)
-MARKET_REOPEN_TIME = time(18, 0)
+MARKET_REOPEN_TIME = time(18, 15)
 
 REQUIRED_ACCOUNT_FIELDS = (
     "daily_realized_pnl",
@@ -111,8 +114,8 @@ def check_consistency(daily_profit_today, total_realized_profit):
 
 
 def check_trading_hours(now):
-    """Weekly trading schedule: closed daily 16:00-18:00 ET Monday-Thursday,
-    and closed from Friday 16:00 ET through Sunday 18:00 ET (weekend).
+    """Weekly trading schedule: closed daily 16:00-18:15 ET Monday-Thursday,
+    and closed from Friday 16:00 ET through Sunday 18:15 ET (weekend).
     `now` must be a timezone-aware datetime (e.g. tradovate_bot.time_utils.
     now_et()) -- this module has no clock access of its own, per its module
     docstring, so the caller always supplies "now" explicitly."""
@@ -130,8 +133,8 @@ def check_trading_hours(now):
         closed = t < MARKET_REOPEN_TIME
     if closed:
         return False, (
-            "market closed: outside trading hours (closed daily 16:00-18:00 ET "
-            "Mon-Thu, and Fri 16:00 ET - Sun 18:00 ET)"
+            "market closed: outside trading hours (closed daily 16:00-18:15 ET "
+            "Mon-Thu, and Fri 16:00 ET - Sun 18:15 ET)"
         )
     return True, "within trading hours"
 
