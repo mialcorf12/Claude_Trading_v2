@@ -29,9 +29,9 @@ odd/tasks/tradovate-execution-bot.md, cycles 18-23):
 These guards do NOT replace the broader discretionary read (volume, news,
 overall trend) -- they only formalize these two specific, previously
 prose-only rules so they are testable and can't silently drift between
-cron cycles. There is no caller inside the bot yet: wiring this into
-executor.py / the cron prompt is a separate, later decision (task 2 is
-this module and its tests only).
+cron cycles. This is now wired into tradovate_bot.executor.process_order
+(see odd/tasks/tradovate-architecture-scaling.md task 4): every entry
+order's decision flow runs evaluate_signal before placing an order.
 
 Bar shape: each bar is a plain dict with at least `open`, `high`, `low`,
 `close` (finite floats) and an optional `timestamp`. This matches the OHLC

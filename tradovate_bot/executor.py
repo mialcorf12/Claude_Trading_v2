@@ -25,7 +25,7 @@ import time
 import uuid
 from dataclasses import dataclass
 
-from tradovate_bot import account_state, oif_writer, position_state, risk_guard, time_utils
+from tradovate_bot import account_state, oif_writer, position_state, risk_guard, signals, time_utils
 
 STATE_DIR = os.path.join(os.path.dirname(__file__), "state")
 DECISIONS_LOG = os.path.join(STATE_DIR, "decisions.log.jsonl")
@@ -173,7 +173,7 @@ def normalize_order(raw_order):
         "qty": qty_num,
         "type": order_type,
     }
-    for key in ("stop_price", "limit_price", "stop_loss_points", "take_profit_points"):
+    for key in ("stop_price", "limit_price", "stop_loss_points", "take_profit_points", "bars"):
         if raw_order.get(key) is not None:
             normalized[key] = raw_order[key]
     return normalized
@@ -433,12 +433,26 @@ def process_order(raw_order, config=None):
     this defensively flattens via CLOSEPOSITION rather than risk leaving a
     possibly-open position with no stop and no target.
 
-    After risk_guard passes but before placing the entry, this also
-    enforces one-position-at-a-time: if current_position() reports
-    anything other than Flat (an open Long/Short, or "unknown" because the
-    log couldn't be read) the entry is refused -- this bot is single-
-    order/single-position by design, so any non-Flat read means a new
-    entry must not be placed. See
+    After risk_guard passes but before the one-position-at-a-time check,
+    this also runs the signals.py guardrails: signals.evaluate_signal(
+    order["bars"], order["side"]) must come back clear, or the entry is
+    refused -- same fail-closed pattern as risk_guard and the position
+    check, not an optional extra. An order with no `bars` field (or
+    malformed/insufficient bars) is refused here too: signals.py's own
+    guards already fail closed (flagged=True) on missing/malformed/too-few
+    bars, so this gate never special-cases a missing `bars` field itself --
+    it just trusts evaluate_signal's own fail-closed verdict and refuses
+    whenever `clear` isn't True. This formalizes the pullback-over-chase
+    and repeated-reversal-is-chop rules in code instead of leaving them as
+    prose the cron prompt has to re-derive every cycle. See
+    odd/tasks/tradovate-architecture-scaling.md task 4.
+
+    After risk_guard and the signals guard both pass but before placing
+    the entry, this also enforces one-position-at-a-time: if
+    current_position() reports anything other than Flat (an open
+    Long/Short, or "unknown" because the log couldn't be read) the entry
+    is refused -- this bot is single-order/single-position by design, so
+    any non-Flat read means a new entry must not be placed. See
     odd/tasks/tradovate-architecture-scaling.md task 1.
 
     `config` is an optional explicit identity/transport bundle, threaded
@@ -463,6 +477,15 @@ def process_order(raw_order, config=None):
 
     if not decision.allow:
         return decision
+
+    verdict = signals.evaluate_signal(order.get("bars"), order.get("side"))
+    if not verdict.clear:
+        refusal = risk_guard.Decision(
+            False,
+            "refusing new entry: signals guard flagged this setup -- %s" % "; ".join(verdict.reasons),
+        )
+        log_decision(order, refusal, extra={"signal_reasons": list(verdict.reasons)})
+        return refusal
 
     position = current_position(config=config) if config is not None else current_position()
     account_id = config.account_id if config is not None else NT8_ACCOUNT_ID

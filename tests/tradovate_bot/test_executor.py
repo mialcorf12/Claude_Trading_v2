@@ -20,6 +20,37 @@ from tradovate_bot import executor, position_state, time_utils
 # executor tests never depend on the real wall-clock time when they run.
 WITHIN_HOURS = datetime(2026, 11, 11, 10, 0, tzinfo=time_utils.EASTERN)
 
+# ---------------------------------------------------------------- signals.py bars fixtures
+# (odd/tasks/tradovate-architecture-scaling.md task 4: process_order now
+# runs signals.evaluate_signal(order["bars"], order["side"]) before the
+# one-position-at-a-time check, so every pre-existing test whose raw_order
+# needs to reach that check or anything after it needs a `bars` list that
+# clears both of signals.py's guards. Adapted from
+# tests/tradovate_bot/test_signals.py's own NEITHER_FIRES_BARS/
+# CYCLE_18_CHASE_BARS fixtures: one down-close pullback (clears the chase
+# guard for either "buy" or "sell") with highs/lows climbing monotonically
+# so no interior bar is a swing high/low (clears the chop guard too).
+CLEAN_SIGNAL_BARS = [
+    {"open": 99.0, "high": 101.0, "low": 95.0, "close": 100.0},
+    {"open": 100.0, "high": 110.0, "low": 100.0, "close": 105.0},
+    {"open": 105.0, "high": 115.0, "low": 105.0, "close": 103.0},
+    {"open": 103.0, "high": 120.0, "low": 108.0, "close": 108.0},
+    {"open": 108.0, "high": 125.0, "low": 111.0, "close": 112.0},
+    {"open": 112.0, "high": 130.0, "low": 114.0, "close": 115.0},
+]
+
+# Cycle 18's exact chase scenario (see tests/tradovate_bot/test_signals.py
+# and tradovate_bot/signals.py's module docstring): four consecutive higher
+# closes off the 11:55 low with zero retracement -- trips the chase guard
+# for a "buy".
+CHASE_FLAGGED_BARS = [
+    {"open": 27625.00, "high": 27635.00, "low": 27620.00, "close": 27631.75},
+    {"open": 27632.00, "high": 27660.00, "low": 27630.00, "close": 27657.25},
+    {"open": 27657.00, "high": 27662.00, "low": 27655.00, "close": 27658.75},
+    {"open": 27659.00, "high": 27682.00, "low": 27658.00, "close": 27678.50},
+    {"open": 27679.00, "high": 27695.00, "low": 27677.00, "close": 27692.00},
+]
+
 
 @pytest.fixture(autouse=True)
 def isolated_state(tmp_path, monkeypatch):
@@ -130,7 +161,7 @@ def test_process_order_places_order_when_all_checks_pass(isolated_state, monkeyp
     _write_telemetry(isolated_state, monkeypatch)
     write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
     monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
-    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market"}
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market", "bars": CLEAN_SIGNAL_BARS}
 
     decision = executor.process_order(raw_order)
 
@@ -145,6 +176,49 @@ def test_process_order_places_order_when_all_checks_pass(isolated_state, monkeyp
     assert decisions[0]["allow"] is True
     assert fills[0]["status"] == "sent"
     assert fills[0]["command"] == command_arg
+
+
+# ---------------------------------------------------------------- signals.py guard wiring
+# (odd/tasks/tradovate-architecture-scaling.md task 4)
+
+def test_process_order_refuses_entry_with_no_bars(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock()
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"}  # no "bars" key at all
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is False
+    assert "signal" in decision.reason.lower() or "bars" in decision.reason.lower()
+    write_command.assert_not_called()
+    rows = _read_jsonl(executor.DECISIONS_LOG)
+    assert rows[-1]["allow"] is False
+
+
+def test_process_order_refuses_entry_when_chase_guard_flags_bars(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock()
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CHASE_FLAGGED_BARS}
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is False
+    assert "signal" in decision.reason.lower()
+    write_command.assert_not_called()
+
+
+def test_process_order_proceeds_when_bars_pass_signal_guard(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market", "bars": CLEAN_SIGNAL_BARS}
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is True  # reaches the existing one-position-at-a-time/placement logic unchanged
+    write_command.assert_called_once()
 
 
 def test_process_order_rejects_outside_trading_hours(isolated_state, monkeypatch):
@@ -203,8 +277,8 @@ def test_run_once_processes_every_order(isolated_state, monkeypatch, tmp_path):
     monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
     orders_path = tmp_path / "orders.json"
     orders_path.write_text(json.dumps({"orders": [
-        {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"},
-        {"symbol": "MNQ", "side": "sell", "qty": 1, "type": "market"},
+        {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CLEAN_SIGNAL_BARS},
+        {"symbol": "MNQ", "side": "sell", "qty": 1, "type": "market", "bars": CLEAN_SIGNAL_BARS},
     ]}))
 
     decisions = executor.run_once(orders_path=str(orders_path))
@@ -376,6 +450,7 @@ def test_process_order_waits_for_fill_then_places_bracket_from_real_fill_price(i
     raw_order = {
         "symbol": "MNQ", "side": "sell", "qty": 3, "type": "market",
         "stop_loss_points": 33.25, "take_profit_points": 16.75,
+        "bars": CLEAN_SIGNAL_BARS,
     }
 
     decision = executor.process_order(raw_order)
@@ -403,6 +478,7 @@ def test_process_order_flattens_defensively_on_fill_confirmation_timeout(isolate
     raw_order = {
         "symbol": "MNQ", "side": "buy", "qty": 3, "type": "market",
         "stop_loss_points": 33.25, "take_profit_points": 16.75,
+        "bars": CLEAN_SIGNAL_BARS,
     }
 
     decision = executor.process_order(raw_order)
@@ -426,6 +502,7 @@ def test_process_order_skips_bracket_when_entry_rejected_by_nt8(isolated_state, 
     raw_order = {
         "symbol": "MNQ", "side": "buy", "qty": 3, "type": "market",
         "stop_loss_points": 33.25, "take_profit_points": 16.75,
+        "bars": CLEAN_SIGNAL_BARS,
     }
 
     decision = executor.process_order(raw_order)
@@ -444,6 +521,7 @@ def test_process_order_refuses_bracket_when_outgoing_dir_not_configured(isolated
     raw_order = {
         "symbol": "MNQ", "side": "buy", "qty": 3, "type": "market",
         "stop_loss_points": 33.25, "take_profit_points": 16.75,
+        "bars": CLEAN_SIGNAL_BARS,
     }
 
     decision = executor.process_order(raw_order)
@@ -482,7 +560,7 @@ def test_process_order_rejects_when_a_long_position_is_already_open(isolated_sta
     write_command = mock.Mock()
     monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
     monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("Long", 2))
-    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"}
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CLEAN_SIGNAL_BARS}
 
     decision = executor.process_order(raw_order)
 
@@ -498,7 +576,7 @@ def test_process_order_rejects_when_a_short_position_is_already_open(isolated_st
     write_command = mock.Mock()
     monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
     monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("Short", 1))
-    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"}
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CLEAN_SIGNAL_BARS}
 
     decision = executor.process_order(raw_order)
 
@@ -511,7 +589,7 @@ def test_process_order_rejects_when_position_is_unknown(isolated_state, monkeypa
     write_command = mock.Mock()
     monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
     monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("unknown", 0))
-    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"}
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CLEAN_SIGNAL_BARS}
 
     decision = executor.process_order(raw_order)
 
@@ -524,7 +602,7 @@ def test_process_order_allows_when_position_is_flat(isolated_state, monkeypatch)
     write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
     monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
     monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("Flat", 0))
-    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"}
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CLEAN_SIGNAL_BARS}
 
     decision = executor.process_order(raw_order)
 
@@ -594,7 +672,9 @@ def test_run_once_processes_orders_normally_when_within_hours(isolated_state, mo
     write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
     monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
     orders_path = tmp_path / "orders.json"
-    orders_path.write_text(json.dumps({"orders": [{"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"}]}))
+    orders_path.write_text(json.dumps({"orders": [
+        {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CLEAN_SIGNAL_BARS},
+    ]}))
 
     decisions = executor.run_once(orders_path=str(orders_path))
 
@@ -674,7 +754,7 @@ def test_process_order_with_config_uses_overridden_account_and_instrument(isolat
     monkeypatch.setattr(executor, "current_position", lambda config=None: position_state.PositionState("Flat", 0))
     write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
     monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
-    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market"}
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market", "bars": CLEAN_SIGNAL_BARS}
 
     decision = executor.process_order(raw_order, config=cfg)
 
@@ -688,7 +768,7 @@ def test_process_order_config_none_behaves_exactly_like_omitting_it(isolated_sta
     _write_telemetry(isolated_state, monkeypatch)
     write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
     monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
-    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market"}
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market", "bars": CLEAN_SIGNAL_BARS}
 
     decision_explicit_none = executor.process_order(raw_order, config=None)
 

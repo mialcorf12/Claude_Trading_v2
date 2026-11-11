@@ -76,6 +76,16 @@ trabajar los 3 puntos que mencionas de arquitectura para escalar",
 3. [x] Config object replacing module-level globals in `risk_guard.py` and
    `executor.py`, test-first, keeping back-compatible env-var loading in
    `main()`.
+4. [x] Wire `signals.py` into `executor.process_order`'s decision flow
+   (user request, 2026-11-10: "conecta signals.py al flujo de decisión").
+   Every entry order must carry its own `bars` (the OHLC list the caller
+   already fetched that cycle); `process_order` runs
+   `signals.evaluate_signal(order["bars"], order["side"])` and refuses the
+   entry when the verdict isn't clear -- same fail-closed pattern as the
+   position-state/telemetry checks, not an optional extra. An order with
+   no/malformed `bars` is refused, never silently allowed through
+   (`signals.py`'s own guards already fail closed on missing/insufficient
+   bars, so no extra special-casing is needed in `executor.py`).
 
 ## Acceptance criteria
 - [x] New modules have unit tests, test-first (RED confirmed before
@@ -86,6 +96,11 @@ trabajar los 3 puntos que mencionas de arquitectura para escalar",
   backups, not the only enforcement).
 - [x] Full suite green: `python -m pytest tests/tradovate_bot/ -v`.
 - [x] `tradovate_bot/README.md` updated to document the new modules.
+- [x] `signals.py` has a real caller in `executor.process_order`, test-first,
+  full suite green, no regression in any pre-existing test's *intent*
+  (tests that needed `bars` added to keep exercising what they always
+  tested are not a regression; a test whose assertion changed meaning
+  would be).
 
 ## Delivery
 Work-unit commits on branch `v2.1` (already the active branch) — no new
@@ -220,3 +235,77 @@ branch needed. Conventional commit messages, no AI co-author attribution
   Caveat: `signals.py` is still unwired, by design -- this validation
   covered only `position_state.py`/`current_position()` against live
   data, not the signal-guard thresholds, which remain fixture-only.
+- 2026-11-10: Task 4 done (user request: "conecta signals.py al flujo de
+  decisión"). `normalize_order` now passes an optional `bars` field through
+  unchanged (added to the existing pass-through key list alongside
+  `stop_price`/`limit_price`/`stop_loss_points`/`take_profit_points`).
+  `process_order` runs `signals.evaluate_signal(order.get("bars"),
+  order.get("side"))` right after the existing `risk_guard.evaluate_order`
+  gate and before the one-position-at-a-time check; a non-clear verdict
+  returns a `risk_guard.Decision(False, ...)` refusal naming every fired
+  guard's reason (joined with "; "), logged via the existing
+  `log_decision`/`extra={"signal_reasons": ...}` pattern -- same
+  fail-closed shape as the position-state check right after it. No extra
+  "missing bars -> skip the guard" special-casing was added:
+  `signals._valid_bars`/the guard functions already fail closed
+  (flagged=True) on `bars=None`, malformed bars, or too few bars, so an
+  order with no `bars` key is refused by `evaluate_signal`'s own verdict,
+  not by any new conditional in `executor.py`. Added `from tradovate_bot
+  import signals` to the top-level import. Updated `process_order`'s
+  docstring to document the new gate (between the risk_guard paragraph and
+  the one-position-at-a-time paragraph, same style). Updated the one stale
+  sentence in `signals.py`'s own module docstring ("There is no caller
+  inside the bot yet...") to say it is now wired into
+  `executor.process_order` -- nothing else in that file touched.
+  Test-first: added 3 new tests to `tests/tradovate_bot/test_executor.py`
+  (`test_process_order_refuses_entry_with_no_bars`,
+  `test_process_order_refuses_entry_when_chase_guard_flags_bars` --
+  reusing cycle 18's exact chase fixture --, and
+  `test_process_order_proceeds_when_bars_pass_signal_guard`), plus two new
+  bar-list fixtures (`CLEAN_SIGNAL_BARS`, adapted from
+  `test_signals.py`'s `NEITHER_FIRES_BARS`: one down-close pullback with
+  monotonically climbing highs/lows, clears both guards for either "buy"
+  or "sell"; `CHASE_FLAGGED_BARS`, copied from `test_signals.py`'s
+  `CYCLE_18_CHASE_BARS`). Confirmed RED by temporarily swapping in the
+  pre-change `executor.py` (via `git show HEAD:...`) and running just the
+  two genuinely-RED new tests: both failed (the no-bars case blew up
+  trying to JSON-serialize a `Mock` once it fell through to the OIF write
+  with no gate to stop it; the chase-bars case failed for the same
+  reason) -- the third new test isn't genuinely RED (clean bars pass
+  through identically with or without the gate), so it wasn't used for
+  the RED check. Restored the implementation and confirmed GREEN. Went
+  through every pre-existing `process_order`/`run_once` test in
+  `test_executor.py` one by one and added `"bars": CLEAN_SIGNAL_BARS` to
+  13 of them whose `raw_order`(s) needed to reach the one-position-at-a-
+  time check or anything after it to keep testing what they always
+  tested: `test_process_order_places_order_when_all_checks_pass`,
+  `test_run_once_processes_every_order` (both orders),
+  `test_process_order_waits_for_fill_then_places_bracket_from_real_fill_price`,
+  `test_process_order_flattens_defensively_on_fill_confirmation_timeout`,
+  `test_process_order_skips_bracket_when_entry_rejected_by_nt8`,
+  `test_process_order_refuses_bracket_when_outgoing_dir_not_configured`,
+  `test_process_order_rejects_when_a_long_position_is_already_open`,
+  `test_process_order_rejects_when_a_short_position_is_already_open`,
+  `test_process_order_rejects_when_position_is_unknown`,
+  `test_process_order_allows_when_position_is_flat`,
+  `test_run_once_processes_orders_normally_when_within_hours`,
+  `test_process_order_with_config_uses_overridden_account_and_instrument`,
+  `test_process_order_config_none_behaves_exactly_like_omitting_it`. Five
+  tests that reject earlier in `process_order` (risk_guard's own daily-
+  loss/trading-hours/oversized-position/missing-telemetry checks) needed
+  no change and were individually re-checked to still fail for their
+  original reason, not a new one:
+  `test_process_order_rejects_when_normalization_fails`,
+  `test_process_order_rejects_when_risk_guard_fails`,
+  `test_process_order_rejects_when_telemetry_is_missing`,
+  `test_process_order_rejects_outside_trading_hours`,
+  `test_process_order_rejects_oversized_mnq_position`. The three
+  `run_once` closed-market/auto-flatten tests and the three
+  `build_place_command`-only config tests needed no change either since
+  they never call `process_order` at all (auto-flatten short-circuits
+  before order processing; `build_place_command` is called directly).
+  Full suite: `python -m pytest tests/tradovate_bot/ -v` -> 157 passed, 2
+  failed -- the same pre-existing, intentional uncommitted
+  `CONSISTENCY_PCT=2.00` override in `risk_guard.py` (not touched by this
+  task), not a regression (154 -> 157 is exactly the 3 new tests added,
+  with zero prior tests needing a changed assertion).
