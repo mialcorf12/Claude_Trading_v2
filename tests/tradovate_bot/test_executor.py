@@ -13,7 +13,7 @@ from unittest import mock
 
 import pytest
 
-from tradovate_bot import executor, time_utils
+from tradovate_bot import executor, position_state, time_utils
 
 # Wednesday 2026-11-11, 10:00 ET -- unambiguously within trading hours, so
 # executor tests never depend on the real wall-clock time when they run.
@@ -31,6 +31,10 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(executor, "NT8_ACCOUNT_ID", "SIM101")
     monkeypatch.setattr(executor, "NT8_INSTRUMENT", "MNQ 12-26")
     monkeypatch.setattr(time_utils, "now_et", lambda: WITHIN_HOURS)
+    # Default to Flat so existing tests that don't care about the
+    # one-position-at-a-time safeguard aren't affected by it -- tests that
+    # exercise that safeguard override this explicitly.
+    monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("Flat", 0))
     yield tmp_path
 
 
@@ -468,6 +472,134 @@ def test_log_cycle_appends_one_line_per_call(isolated_state):
     assert len(rows) == 2
     assert rows[1]["signal"] == "buy"
     assert rows[1]["fill_price"] == 27784.0
+
+
+# ---------------------------------------------------------------- one-position-at-a-time
+
+def test_process_order_rejects_when_a_long_position_is_already_open(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock()
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("Long", 2))
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"}
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is False
+    assert "position" in decision.reason.lower()
+    write_command.assert_not_called()
+    rows = _read_jsonl(executor.DECISIONS_LOG)
+    assert rows[-1]["allow"] is False
+
+
+def test_process_order_rejects_when_a_short_position_is_already_open(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock()
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("Short", 1))
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"}
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is False
+    write_command.assert_not_called()
+
+
+def test_process_order_rejects_when_position_is_unknown(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock()
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("unknown", 0))
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"}
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is False
+    write_command.assert_not_called()
+
+
+def test_process_order_allows_when_position_is_flat(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("Flat", 0))
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"}
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is True
+    write_command.assert_called_once()
+
+
+# ---------------------------------------------------------------- auto-flatten on market close
+
+CLOSED_HOURS = datetime(2026, 11, 9, 17, 0, tzinfo=time_utils.EASTERN)  # Monday, within the 16:00-18:00 ET closed window
+
+
+def test_run_once_auto_flattens_when_closed_and_position_open(isolated_state, monkeypatch, tmp_path):
+    monkeypatch.setattr(time_utils, "now_et", lambda: CLOSED_HOURS)
+    monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("Long", 2))
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    orders_path = tmp_path / "orders.json"
+    orders_path.write_text(json.dumps({"orders": [{"symbol": "MNQ", "side": "sell", "qty": 1, "type": "market"}]}))
+
+    decisions = executor.run_once(orders_path=str(orders_path))
+
+    assert decisions == []  # normal order processing skipped this cycle
+    write_command.assert_called_once()
+    command_arg = write_command.call_args[0][1]
+    assert command_arg.split(";")[0:3] == ["CLOSEPOSITION", "SIM101", "MNQ 12-26"]
+    fills = _read_jsonl(executor.FILLS_LOG)
+    assert any(f.get("status") == "auto_flatten_market_closed" for f in fills)
+
+
+def test_run_once_auto_flattens_when_closed_and_position_unknown(isolated_state, monkeypatch, tmp_path):
+    monkeypatch.setattr(time_utils, "now_et", lambda: CLOSED_HOURS)
+    monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("unknown", 0))
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    orders_path = tmp_path / "orders.json"
+    orders_path.write_text(json.dumps({"orders": []}))
+
+    decisions = executor.run_once(orders_path=str(orders_path))
+
+    assert decisions == []
+    write_command.assert_called_once()
+    command_arg = write_command.call_args[0][1]
+    assert command_arg.split(";")[0] == "CLOSEPOSITION"
+    fills = _read_jsonl(executor.FILLS_LOG)
+    assert any(f.get("status") == "auto_flatten_market_closed" for f in fills)
+
+
+def test_run_once_does_nothing_when_closed_and_position_flat(isolated_state, monkeypatch, tmp_path):
+    monkeypatch.setattr(time_utils, "now_et", lambda: CLOSED_HOURS)
+    monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("Flat", 0))
+    write_command = mock.Mock()
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    orders_path = tmp_path / "orders.json"
+    orders_path.write_text(json.dumps({"orders": [{"symbol": "MNQ", "side": "sell", "qty": 1, "type": "market"}]}))
+
+    decisions = executor.run_once(orders_path=str(orders_path))
+
+    assert decisions == []
+    write_command.assert_not_called()
+
+
+def test_run_once_processes_orders_normally_when_within_hours(isolated_state, monkeypatch, tmp_path):
+    # Reuses the autouse isolated_state fixture's WITHIN_HOURS clock.
+    monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("Flat", 0))
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    orders_path = tmp_path / "orders.json"
+    orders_path.write_text(json.dumps({"orders": [{"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market"}]}))
+
+    decisions = executor.run_once(orders_path=str(orders_path))
+
+    assert len(decisions) == 1
+    assert decisions[0].allow is True
+    write_command.assert_called_once()
 
 
 def test_log_cycle_accepts_a_minimal_partial_record(isolated_state):

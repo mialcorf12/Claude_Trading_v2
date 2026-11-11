@@ -25,7 +25,7 @@ import time
 import uuid
 from dataclasses import dataclass
 
-from tradovate_bot import account_state, oif_writer, risk_guard, time_utils
+from tradovate_bot import account_state, oif_writer, position_state, risk_guard, time_utils
 
 STATE_DIR = os.path.join(os.path.dirname(__file__), "state")
 DECISIONS_LOG = os.path.join(STATE_DIR, "decisions.log.jsonl")
@@ -43,6 +43,13 @@ POLL_INTERVAL_SECONDS = float(os.environ.get("TRADOVATE_POLL_INTERVAL_SECONDS", 
 NT8_INCOMING_DIR = os.environ.get("NT8_INCOMING_DIR", "")
 NT8_OUTGOING_DIR = os.environ.get("NT8_OUTGOING_DIR", "")
 NT8_ACCOUNT_ID = os.environ.get("NT8_ACCOUNT_ID", "")
+
+# Directory holding NT8's own windowed diagnostic log (*.en.txt), NOT the
+# ATI incoming/outgoing folders above -- see position_state.py. Used to
+# read the account's current market position for the one-position-at-a-
+# time and auto-flatten-on-close safeguards (see
+# odd/tasks/tradovate-architecture-scaling.md task 1).
+NT8_LOG_DIR = os.environ.get("NT8_LOG_DIR", "")
 
 # Path to the JSON telemetry file written by the read-only NinjaScript
 # AddOn. See account_state.py for the required field contract.
@@ -356,6 +363,15 @@ def _snapshot_outgoing_files():
     return set(os.listdir(NT8_OUTGOING_DIR))
 
 
+def current_position():
+    """Reads the current NT8 market position for NT8_ACCOUNT_ID from NT8's
+    own diagnostic log (see position_state.py), using NT8_LOG_DIR. Returns
+    a position_state.PositionState; "unknown" (unconfigured/missing/
+    unreadable log, or no matching account line) is never treated as Flat
+    by any caller here -- see process_order and run_once."""
+    return position_state.read_position_state(NT8_LOG_DIR, NT8_ACCOUNT_ID)
+
+
 def process_order(raw_order):
     """Normalizes, risk-checks, and -- only on a pass -- places one order
     via the NT8 ATI OIF writer. Always logs the decision, pass or reject,
@@ -369,7 +385,15 @@ def process_order(raw_order):
     the entry, no bracket is placed (there is nothing to protect). If fill
     confirmation doesn't arrive within FILL_CONFIRMATION_TIMEOUT_SECONDS,
     this defensively flattens via CLOSEPOSITION rather than risk leaving a
-    possibly-open position with no stop and no target."""
+    possibly-open position with no stop and no target.
+
+    After risk_guard passes but before placing the entry, this also
+    enforces one-position-at-a-time: if current_position() reports
+    anything other than Flat (an open Long/Short, or "unknown" because the
+    log couldn't be read) the entry is refused -- this bot is single-
+    order/single-position by design, so any non-Flat read means a new
+    entry must not be placed. See
+    odd/tasks/tradovate-architecture-scaling.md task 1."""
     order = normalize_order(raw_order)
     if order is None:
         decision = risk_guard.Decision(False, "order record could not be normalized (missing/malformed fields)")
@@ -382,6 +406,16 @@ def process_order(raw_order):
 
     if not decision.allow:
         return decision
+
+    position = current_position()
+    if position.side != "Flat":
+        refusal = risk_guard.Decision(
+            False,
+            "refusing new entry: one-position-at-a-time -- current position on account %s is "
+            "%s (qty=%s), not Flat" % (NT8_ACCOUNT_ID, position.side, position.qty),
+        )
+        log_decision(order, refusal, extra={"position_side": position.side, "position_qty": position.qty})
+        return refusal
 
     wants_bracket = order.get("stop_loss_points") is not None or order.get("take_profit_points") is not None
 
@@ -434,8 +468,36 @@ def process_order(raw_order):
 
 
 def run_once(orders_path=DEFAULT_ORDERS_PATH):
-    """Processes every order currently in the orders file. Returns the list
-    of decisions made, in order."""
+    """Runs one poll cycle. Before processing any new orders, checks
+    risk_guard.check_trading_hours: if the market is closed AND a position
+    is currently open (or "unknown" -- treated the same as open, never
+    assumed safe, per this module's fail-closed contract), this
+    auto-flattens via a CLOSEPOSITION OIF command (the same mechanism
+    wait_for_entry_fill's timeout path already uses in process_order) and
+    skips normal order processing for this cycle -- the mandatory
+    16:00-18:00 ET flatten no longer depends on the cron prompt's manual
+    step (see odd/tasks/tradovate-architecture-scaling.md task 1). If the
+    market is closed and the position is Flat, there's nothing to flatten
+    and no new entries are possible anyway (risk_guard would reject them),
+    so order processing is simply skipped for the cycle. Returns the list
+    of decisions made for whatever orders were actually processed (empty
+    when the cycle was closed-market and skipped)."""
+    now = time_utils.now_et()
+    hours_ok, _hours_reason = risk_guard.check_trading_hours(now)
+    if not hours_ok:
+        position = current_position()
+        if position.side != "Flat":
+            close_command = oif_writer.build_closeposition_command(account=NT8_ACCOUNT_ID, instrument=NT8_INSTRUMENT)
+            close_path = oif_writer.write_command(NT8_INCOMING_DIR, close_command)
+            log_fill({
+                "command": close_command,
+                "oif_path": close_path,
+                "status": "auto_flatten_market_closed",
+                "position_side": position.side,
+                "position_qty": position.qty,
+            })
+        return []
+
     decisions = []
     for raw_order in load_orders(orders_path):
         decisions.append(process_order(raw_order))
