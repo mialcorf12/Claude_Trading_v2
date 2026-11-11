@@ -271,6 +271,44 @@ def test_load_orders_handles_bare_list_and_wrapped_dict(tmp_path):
     assert executor.load_orders(str(dict_path)) == [{"symbol": "MNQ"}]
 
 
+def test_claim_orders_file_renames_and_returns_claimed_path(tmp_path):
+    orders_path = tmp_path / "orders.json"
+    orders_path.write_text(json.dumps({"orders": [{"symbol": "MNQ"}]}))
+
+    claimed = executor.claim_orders_file(str(orders_path))
+
+    assert claimed is not None
+    assert not orders_path.exists()
+    assert os.path.exists(claimed)
+    assert executor.load_orders(claimed) == [{"symbol": "MNQ"}]
+
+
+def test_claim_orders_file_returns_none_when_missing(tmp_path):
+    assert executor.claim_orders_file(str(tmp_path / "nope.json")) is None
+
+
+def test_run_once_does_not_reprocess_same_orders_file_on_second_call(isolated_state, monkeypatch, tmp_path):
+    # Regression test for the 2026-11-11 runaway-duplicate-fills incident:
+    # a second poller (or this same process polling again) must never see
+    # and resubmit the same orders.json after the first run_once() call
+    # already claimed and processed it.
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    orders_path = tmp_path / "orders.json"
+    orders_path.write_text(json.dumps({"orders": [
+        {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CLEAN_SIGNAL_BARS},
+    ]}))
+
+    first = executor.run_once(orders_path=str(orders_path))
+    second = executor.run_once(orders_path=str(orders_path))
+
+    assert len(first) == 1
+    assert second == []
+    assert write_command.call_count == 1
+    assert not orders_path.exists()
+
+
 def test_run_once_processes_every_order(isolated_state, monkeypatch, tmp_path):
     _write_telemetry(isolated_state, monkeypatch)
     write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))

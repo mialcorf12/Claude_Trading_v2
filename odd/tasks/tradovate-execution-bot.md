@@ -110,12 +110,18 @@ instead of from memory.
    enforced automatically in code: `executor.process_order` refuses a new
    entry whenever `position_state.read_position_state()` reports anything
    other than Flat, and `executor.run_once` auto-sends CLOSEPOSITION when
-   the market is closed and a position is open. The cron prompt's own
-   manual check (tailing the newest `*.en.txt` under `NT8_LOG_DIR` for
-   `Account='Sim101'` + `Market position=`) is now a backup, not the only
-   enforcement -- keep doing it anyway, since it lets the LLM skip the
-   cycle early with a clear status line instead of relying on the code
-   path's refusal to notice.
+   the market is closed and a position is open. `read_position_state`
+   now also carries the last known position forward across a log
+   rotation (fixed 2026-11-11: it used to go blind to "unknown" right
+   after NT8 rotates to a new `*.en.txt` file -- a restart, or local
+   midnight -- until the next real fill wrote something; it now checks
+   every file newest-first and falls back instead of giving up). The
+   cron prompt's own manual check (tailing the newest `*.en.txt` under
+   `NT8_LOG_DIR` for `Account='Sim101'` + `Market position=`, falling
+   back to an older file yourself if the newest one is empty) is now a
+   backup, not the only enforcement -- keep doing it anyway, since it
+   lets the LLM skip the cycle early with a clear status line instead of
+   relying on the code path's refusal to notice.
 2. If flat and within trading hours: fetch fresh MNQ bars from TradingView
    (`mcp-tv-get-ohlcv` / `mcp-tv-get-symbol-data`, symbol `CME_MINI:MNQ1!`,
    5-minute bars) -- not Yahoo (confirmed stale by ~11-15 min on
@@ -149,9 +155,45 @@ instead of from memory.
    order with no/malformed `bars`, exactly like a missing telemetry file
    or an unreadable position log.** Omitting this field is the same class
    of mistake as the `NT8_LOG_DIR` deployment gap -- the bot will reject
-   every order, silently, until this is fixed.
+   every order, silently, until this is fixed. **IMPORTANT, read before
+   writing this file**: if the NSSM `TradovateExecutor` service (or any
+   other always-on poller) might be running, see step 7's note on the
+   2026-11-11 incident below first -- writing this file is safe again
+   now that `run_once` claims it atomically (fixed 2026-11-11), but only
+   if that service is running CURRENT code.
 7. Run it through the executor (same invocation used for prior cycles --
    see Progress for the exact env vars/script path used that session).
+   **2026-11-11 incident + fix**: an independently-running NSSM service
+   (`TradovateExecutor`, started long before any cron session touches
+   this file) polls `trader/orders.json` on its own every
+   `POLL_INTERVAL_SECONDS` (5s default) via the exact same `run_once`.
+   Before the fix, neither `load_orders` nor `run_once` ever removed a
+   processed order file, so whichever process polled next -- this
+   session's own manual call, or that service -- found and resubmitted
+   the SAME order again. That resubmitted a single SELL 3 contracts 12
+   times in about a minute, building a 36-contract position (12x the
+   3-contract cap) with no bracket, before anyone caught it. Fixed:
+   `run_once` now calls `claim_orders_file` to atomically rename the
+   file to a unique claimed name the instant it's read (`os.rename` is
+   atomic -- only one concurrent claimant can win), then deletes it after
+   processing. Any process that loses the race just finds the file
+   already gone and does nothing, instead of reprocessing it. This makes
+   writing `trader/orders.json` safe again regardless of how many
+   pollers are running -- **but a separate, equally serious problem was
+   also found and is NOT about this file**: that same NSSM service's
+   python process had been running since 2026-11-10 08:43:44 ET, which
+   predates nearly every safety fix landed that day (the bracket-from-
+   confirmed-fill fix at 11:14, the trading-hours gate at 12:59, the
+   one-position-at-a-time + auto-flatten guard at 19:11, the signals.py
+   chop/chase guard at 21:32) -- Python does not hot-reload a running
+   process's imported modules, so none of those fixes were actually
+   active in the service the whole time it ran, which is also why none
+   of the 12 duplicate fills got a bracket. **Before trusting the
+   service again, verify it was restarted after its current deploy of
+   `executor.py` landed, or restart it yourself** -- a running PID's
+   start time older than the file's last git-commit time for
+   `tradovate_bot/*.py` means it's serving stale code no matter what the
+   file on disk says.
 8. Verify the real outcome against NT8's own log and the outgoing/incoming
    folders -- never report success without reading NT8's own confirmation.
 9. If risk_guard rejects (daily loss, EOD floor, consistency, trading
@@ -166,11 +208,21 @@ instead of from memory.
     `position_state` are actually present in the live `executor.py`/
     `risk_guard.py` before trusting the code (added after the 2026-11-10
     branch-checkout incident below, where a `git checkout main` under
-    this session silently reverted three already-shipped fixes).
+    this session silently reverted three already-shipped fixes). If the
+    `TradovateExecutor` NSSM service (or any other always-on poller) is
+    Running, also check whether it needs a restart to pick up anything
+    changed in `tradovate_bot/*.py` since it last started (see step 7's
+    2026-11-11 incident note) -- Python never hot-reloads a long-running
+    process's own imports, so a stale service can silently diverge from
+    the file this step just verified on disk.
 11. Append one short line per cycle to this doc's Progress section
     (timestamp, decision, outcome) and the full structured record to
     `tradovate_bot/state/cycles.log.jsonl` via `executor.log_cycle(...)`.
-12. Clean up any one-shot order file after each run.
+12. Clean up any one-shot order file after each run -- as of 2026-11-11
+    this is now guaranteed by `run_once` itself (claim-then-delete, see
+    step 7's note), not something to remember to do by hand. Still true
+    for any one-off path outside `run_once`/`trader/orders.json` (e.g. a
+    manual `process_order(...)` call that wrote its own scratch file).
 
 ## Progress
 - 2026-11-09: Created. First implementation pass (direct Tradovate REST/WS
@@ -1084,3 +1136,403 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   close` this same file showed earlier tonight, before the first restart
   corrupted it. After the next recompile, `daily_realized_pnl` should read
   -200.50, matching NT8, instead of 0.
+  Cycle (2026-11-10, ~23:09 ET, cron job `2c28893e`): sanity check passed
+  (branch v2.1, check_trading_hours/signals/position_state all present).
+  **Persistence fix verified live during this cycle**: NT8 restarted again
+  mid-cycle (23:08:36 ET, new PID 10888, log rolled to
+  `log.20261110.00002.en.txt` -- almost certainly the F5 recompile for the
+  fix committed in `2bf1c89`). After reconnect, `account_telemetry.json`
+  read `daily_realized_pnl: -200.5`, `eod_balance_last_close: 95529` --
+  exactly matching NT8 and the seeded snapshot, instead of resetting to 0
+  like the two prior restarts tonight. Fix confirmed working. Position:
+  Flat (unchanged since 18:52:06 ET; the new log file has no Sim101 lines
+  yet, so `position_state.read_position_state` would still read `unknown`
+  this cycle -- moot, see below). Fresh TradingView data (last bar 23:05
+  ET, streaming): continued upside from the prior cycle's 28198 to a
+  28214.25 high, pulling back to ~28203 -- `signals.evaluate_signal`
+  still flagged chop for both directions (3 swing highs/lows in the
+  trailing 9-bar window). Manual read agreed before running the code.
+  Skipped, no order attempted. See cycles.log.jsonl.
+  Cron cadence changed (2026-11-10, ~23:17 ET, user request "quiero
+  actualizar el cron para que se ejecute cada 10min en lugar de 15min"):
+  deleted job `2c28893e` (`7,22,37,52 * * * *`, 15-min), recreated as job
+  `e9e43f16` with cadence `3,13,23,33,43,53 * * * *` (10-min), same prompt
+  pointing at this doc's Cron procedure section.
+  Cycle (2026-11-10, ~23:17 ET, cron job `e9e43f16`, first run at the new
+  10-min cadence): sanity check passed (branch v2.1, no new NT8 restart --
+  still PID 10888). Flat, within hours. Fresh TradingView data (last bar
+  23:15 ET, streaming): a clean swing up to a 28214.25 high (from the
+  28153.5 low two cycles ago) is now pulling back 4 straight bars to
+  28174.25/28167.75 (tick) -- borderline case, exactly
+  `CHOP_SWING_THRESHOLD` (2) swing points in the trailing 9-bar window.
+  `signals.evaluate_signal`: chase guard clear for SELL (a retracement
+  exists earlier in the window) but chop guard still fires at the
+  threshold. Read it as one swing cycle still resolving, not a confirmed
+  break, per step 3 -- respected the code backstop on a borderline call
+  rather than routing around it. Skipped, no order attempted. See
+  cycles.log.jsonl.
+  Cycle (2026-11-10, ~23:28 ET, manual run, user request "quiero que
+  corras un cron de forma manual"): sanity check passed (branch v2.1, no
+  new NT8 restart -- still PID 10888). Flat, within hours. Fresh
+  TradingView data (last bar 23:25 ET, streaming): the pullback from
+  28214.25 bottomed at 28165.5 (23:15 bar) and resumed to a new high
+  28216.75 -- a pullback-then-continuation pattern, the same shape cycle
+  23 won on per signals.py's own docstring. `signals.evaluate_signal`
+  still flagged chop for both directions at exactly
+  `CHOP_SWING_THRESHOLD=2` (one swing high, one swing low in the trailing
+  9-bar window) -- second consecutive cycle landing right at this
+  threshold. Respected the code backstop rather than overriding a
+  borderline read. Skipped, no order attempted. See cycles.log.jsonl.
+  Cycle (2026-11-10, ~23:38 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 23:35 ET, streaming): price
+  kept grinding higher -- 28220 high this cycle, up from 28216.75 last
+  cycle and 28198 the cycle before that. **Third consecutive cycle landing
+  exactly at `CHOP_SWING_THRESHOLD=2`** (one swing high at 23:30, one
+  swing low at 23:15 in the trailing 9-bar window). Flagging this pattern
+  strongly now: each cycle's "swing high" has been a HIGHER high than the
+  one before it, not the lower-high bounce cycle 20 (the chop rule's
+  actual origin) describes -- this looks more like ordinary shallow
+  pullbacks inside a sustained uptrend than genuine repeated-reversal
+  chop. Still respected the code backstop, did not override it
+  unilaterally. Skipped, no order attempted. Worth the user's attention:
+  three real opportunities in a row have now gone unfilled on what reads
+  as a clean uptrend. See cycles.log.jsonl.
+  `CHOP_SWING_THRESHOLD` raised 2 -> 3 (2026-11-10, ~23:42 ET, user
+  request "aplica ambas recomendaciones a ver que sucede en la proxima
+  ejecucion programada", confirmed via AskUserQuestion to mean the single
+  threshold change only -- no window-size change was ever actually
+  recommended, that was discarded as an alternative, not proposed).
+  `tradovate_bot/signals.py`: the module's own threshold-rationale comment
+  claimed "two or more swing highs/lows... not just a single pullback,
+  which is normal" -- but a single normal pullback-then-continuation
+  always produces exactly 2 swing points (one high, one low), so
+  threshold=2 fired on the very first clean retracement, which is exactly
+  what happened three cycles running tonight (28198 -> 28216.75 -> 28220,
+  each a higher high, not cycle 20's lower-high bounce). Raised to 3 so a
+  single confirmed pullback can clear the guard; rewrote the rationale
+  comment to say so. Ran `python -m pytest tests\tradovate_bot\ -q`: 2
+  failures, both pre-existing (`test_consistency_rule_breached_rejects`,
+  `test_check_consistency_function_directly`) -- confirmed via `git
+  stash`/`stash pop` that they fail the same way with signals.py
+  untouched, caused by the already-known `CONSISTENCY_PCT=2.00` live
+  drift vs the committed `0.40` fixtures, unrelated to this change. Every
+  signals.py-related test passed. Pure Python, no compile/redeploy step
+  needed -- takes effect on the very next cron cycle's import.
+  Cycle (2026-11-10, ~23:47 ET, cron job `e9e43f16`, first cycle under
+  the new `CHOP_SWING_THRESHOLD=3`): sanity check passed (branch v2.1, no
+  new NT8 restart -- still PID 10888). Flat, within hours. Fresh
+  TradingView data (last bar 23:45 ET, streaming): still flagged chop for
+  both directions, but now with **4** real swing points in the trailing
+  9-bar window (28185 low -> 28220 high -> 28201.25 low -> 28218.75 high)
+  -- genuine consolidation near the 28200-28220 highs, not a single clean
+  pullback. Fix behaving as intended on its first live test: still catches
+  real chop instead of just letting everything through. Skipped, no order
+  attempted. See cycles.log.jsonl.
+  Cycle (2026-11-10, ~23:58 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 23:55 ET, streaming): price
+  oscillated among three swing points near the highs (28215-28220) and is
+  now declining to 28187.75 (tick). `signals.evaluate_signal`: chase guard
+  clear for SELL (a retracement exists earlier in the window), chop guard
+  fires at the new threshold (3 swing points) -- genuine chop, not a
+  borderline call this time. Manual read agreed before running the code.
+  Skipped, no order attempted. See cycles.log.jsonl.
+  Cycle (2026-11-11, ~00:08 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Date rolled to 2026-11-11 but still well before the 17:00-ET
+  trading-day boundary -- same trading day, no rollover yet. Fresh
+  TradingView data (last bar 00:05 ET, streaming): price is now
+  range-bound, oscillating roughly 28187-28233 over the last hour with
+  repeated swing highs/lows, extending to a fresh high 28233.5 (forming).
+  `signals.evaluate_signal` flagged chop for both directions (4 swing
+  points in the trailing 9-bar window). Manual read agreed. Skipped, no
+  order attempted. See cycles.log.jsonl.
+  Cycle (2026-11-11, ~00:18 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 00:15 ET, streaming): same
+  range-bound chop (roughly 28190-28233.5), now consolidating with a
+  lower high (28218.5) after the 28233.5 print. `signals.evaluate_signal`
+  flagged chop for both directions (4 swing points). Manual read agreed.
+  Skipped, no order attempted. See cycles.log.jsonl.
+  Cycle (2026-11-11, ~00:28 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 00:25 ET, streaming): pulled
+  back to 28201/28204.5 then resumed to 28221.5/28229 (tick), still
+  inside the same 28190-28233.5 range. `signals.evaluate_signal` flagged
+  chop for both directions (3 swing points). Manual read agreed. Skipped,
+  no order attempted. See cycles.log.jsonl.
+  Cycle (2026-11-11, ~00:38 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 00:35 ET, streaming): new high
+  28235.25, now pulling back to 28219/28219.75 (tick) -- still the same
+  range-expansion chop. `signals.evaluate_signal` flagged chop for both
+  directions (3 swing points). Manual read agreed. Skipped, no order
+  attempted. See cycles.log.jsonl.
+  Cycle (2026-11-11, ~00:48 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 00:45 ET, streaming): new high
+  28241, now pulling back to 28223.25/28221.75 (tick) -- range keeps
+  expanding upward but a fresh swing shows up in the trailing window
+  every cycle. `signals.evaluate_signal` flagged chop for both directions
+  (3 swing points). Manual read agreed. Skipped, no order attempted. See
+  cycles.log.jsonl.
+  Cycle (2026-11-11, ~00:58 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 00:55 ET, streaming): new high
+  28247 (close 28246.25) -- last three bars climbed with higher highs AND
+  higher lows (28234.5 -> 28241.5 -> 28246.25), a clean run, but the
+  trailing 9-bar window still carries the earlier swings from the broader
+  range expansion. `signals.evaluate_signal` flagged chop for both
+  directions (3 swing points). Manual read agreed -- the clean recent run
+  is real but too short to clear the window yet. Skipped, no order
+  attempted. See cycles.log.jsonl.
+  Cycle (2026-11-11, ~01:08 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 01:05 ET, streaming): new high
+  28253.5, now pulling back to 28232.5/28236.25 (tick) -- continued range
+  expansion with repeated swings. `signals.evaluate_signal` flagged chop
+  for both directions (4 swing points). Manual read agreed. Skipped, no
+  order attempted. See cycles.log.jsonl.
+  Cycle (2026-11-11, ~01:18 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 01:15 ET, streaming): new high
+  28257.5 (close 28256), continued range expansion with repeated swing
+  points. `signals.evaluate_signal` flagged chop for both directions (4
+  swing points). Manual read agreed. Skipped, no order attempted. See
+  cycles.log.jsonl.
+  Cycle (2026-11-11, ~01:28 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 01:25 ET, streaming): new high
+  28264.5, now pulling back to 28240.25/28238 (tick) -- same persistent
+  range-expansion chop. `signals.evaluate_signal` flagged chop for both
+  directions (3 swing points). Manual read agreed. Skipped, no order
+  attempted. See cycles.log.jsonl.
+  Cycle (2026-11-11, ~01:38 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 01:35 ET, streaming): new high
+  28280.5 on above-average volume (5043 vs ~4082 avg), continuing the
+  persistent range-expansion uptrend. `signals.evaluate_signal` flagged
+  chop for both directions (4 swing points). Manual read agreed. Skipped,
+  no order attempted. See cycles.log.jsonl.
+  Cycle (2026-11-11, ~01:48 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 01:45 ET, streaming): after the
+  28280.5 high, now pulling back to 28249/28252.75 (tick).
+  `signals.evaluate_signal` flagged chop for both directions (4 swing
+  points). Manual read agreed. Skipped, no order attempted. See
+  cycles.log.jsonl.
+  Cycle (2026-11-11, ~01:58 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 01:55 ET, streaming):
+  consolidating after the 28280.5 high, bouncing between 28224.25 and
+  28252 (tick 28248.5). `signals.evaluate_signal` flagged chop for both
+  directions (3 swing points). Manual read agreed. Skipped, no order
+  attempted. See cycles.log.jsonl.
+  Cycle (2026-11-11, ~02:08 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1, no new NT8 restart -- still PID 10888). Flat, within
+  hours. Fresh TradingView data (last bar 02:05 ET, streaming): a sharp,
+  high-volume reversal bar (7157 vs ~4036 avg) broke down from 28280.5
+  to 28214.25/28210.75 -- but the window shows a bounce to a LOWER high
+  (28252 < 28280.5) before this decline resumed, the exact cycle 20
+  pattern the chop rule targets. `signals.evaluate_signal` flagged chop
+  for both directions (3 swing points). Manual read agreed: not a clean
+  break yet. Skipped, no order attempted. See cycles.log.jsonl.
+  **CRITICAL INCIDENT -- runaway duplicate fills (2026-11-11, ~02:20-
+  02:21 ET, cron job `e9e43f16`):** First genuinely clear signal all
+  session -- `signals.evaluate_signal` returned `clear=True` for BOTH
+  directions (chase guard clear via an earlier retracement; chop guard
+  clear at 2 swings, under the new threshold of 3). Manual read: lower
+  highs/lower lows since the 28280.5 peak plus a high-volume (7157)
+  breakdown bar -- judged SELL. Wrote `trader/orders.json` as
+  `{"orders": [{...one SELL qty=3 order...}]}` and ran
+  `executor.run_once()` directly from this session to process it.
+
+  **What went wrong**: an NSSM Windows service named `TradovateExecutor`
+  (PID 8704, started 2026-11-10 08:43:44 -- i.e. NOT started by this
+  session) is already running `executor.main()`'s always-on poll loop
+  against the exact same `trader/orders.json` path, polling every ~5s.
+  Step 12 ("clean up any one-shot order file after each run") was not
+  done between this session's own `run_once()` call and the service's
+  next poll tick, so the service kept finding and resubmitting the SAME
+  order file: 12 separate PLACE/Fill cycles logged 02:20:26-02:21:22 ET
+  in the newly-midnight-rotated `log.20261111.00000.en.txt`, building
+  Short MNQ from 0 to **36 contracts** (12x the 3-contract cap), average
+  fill ~28206.54, with **no stop-loss/take-profit bracket ever attached**
+  -- this manual `run_once()` path doesn't place the bracket the way the
+  normal fill-wait flow inside `process_order` does.
+
+  **Stopped it**: deleted `trader/orders.json`. Confirmed via the NT8 log
+  that fills stopped (quiet for 51+ seconds after deletion, last fill
+  02:21:22 ET) -- the bleeding is contained.
+
+  **Root causes identified, none fixed yet**:
+  1. A background service independent of this session's cron cycles can
+     race with any order file this session writes -- the two were never
+     coordinated.
+  2. Neither `load_orders` nor `run_once` deletes/renames a processed
+     order file -- it stays there to be picked up again on the very next
+     poll, by whichever process polls first.
+  3. The bracket-placement path that protects a fill (stop-loss/take-
+     profit) only runs inside the normal `process_order`/fill-wait flow,
+     not when `run_once()` is invoked ad hoc the way this cycle did --
+     every one of the 12 fills is naked.
+
+  Sim101 is paper/demo (confirmed earlier in this doc), not real money,
+  but the bug class is real and would be dangerous on a funded account.
+  **Did not attempt to close/flatten the resulting 36-contract short
+  unilaterally** -- the proven duplication risk of writing anything else
+  to `trader/orders.json` right now means any close attempt needs the
+  user's input first. See cycles.log.jsonl for the full structured
+  record.
+
+  **Incident resolved**: asked the user how to proceed (AskUserQuestion);
+  chose "close the position now." By the time that answer was processed
+  here, the user had already closed the position themselves, manually,
+  via NT8 Chart Trader at 06:50:55:884 ET (Buy to cover qty=36, avg fill
+  ~28354.49) -- a real-world gap of several hours passed between the
+  question being asked and answered. This session's own close attempt
+  (direct `oif_writer.build_closeposition_command` + `write_command` to
+  NT8's incoming folder, deliberately bypassing `trader/orders.json`
+  entirely so the NSSM service couldn't re-trigger on it) landed 3
+  seconds later at 06:50:58:505 ET and was correctly rejected by NT8
+  ("there is no position for instrument") -- harmless, since the account
+  was already Flat. Final confirmed state: Flat.
+  `tradovate_bot/state/account_telemetry.json` shows `daily_realized_pnl:
+  -10852.5` (current_balance 84676.5 vs eod_balance_last_close 95529,
+  internally consistent -- the baseline-persistence fix is still holding
+  correctly). Paper/Sim101 money, not real, but a real ~$10.9k simulated
+  loss directly caused by the runaway-duplicate-fills bug. **The bug
+  itself is not fixed** -- only this occurrence's fallout was contained.
+  Root causes (background service racing any order file this session
+  writes; no post-processing cleanup of that file) still need a real fix
+  before trusting a manual/one-shot order write to `trader/orders.json`
+  again while `TradovateExecutor` is running.
+
+  Cycle (2026-11-11, ~06:52 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1; `TradovateExecutor` NSSM service confirmed still Running
+  -- bug from the incident above not fixed yet). Flat (confirmed both by
+  NT8 log and by `position_state.read_position_state`, which now
+  correctly reads Flat again since the midnight-rotated log file has
+  position lines). Fresh TradingView data (last bar 06:50 ET, streaming):
+  a sustained uptrend for hours (28210 -> 28377 high), a shallow pullback
+  to 28336.75 just resolved upward to 28362.75 (tick 28361) --
+  `signals.evaluate_signal` clear=True for both directions again; manual
+  read judged BUY (pullback-then-continuation). Deliberately called
+  `executor.process_order(order)` directly in-process instead of writing
+  `trader/orders.json`, specifically to avoid the NSSM service re-
+  triggering the same duplication bug. Correctly blocked:
+  `risk_guard.check_daily_loss` rejected it ("daily loss limit breached:
+  -10852.50 <= -600.00") -- the prior incident's loss already breaches
+  the $600 limit, so no new entries are possible for the rest of this
+  trading day (resets at the 17:00 ET boundary). No OIF write reached
+  NT8; `trader/orders.json` was never written this cycle. See
+  cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~06:58 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1; `TradovateExecutor` still Running, `trader/orders.json`
+  still absent). Flat, within hours. Fresh TradingView data (last bar
+  06:55 ET, streaming): uptrend continues to a new high 28389.75.
+  `signals.evaluate_signal` clear=True both directions again; manual read
+  judged BUY. Not acted on: daily loss limit still breached (-10852.50 <=
+  -600.00, reconfirmed via `account_telemetry.json`) -- did not re-run
+  `process_order` since last cycle already verified this exact rejection
+  mechanism and nothing has changed; no value in exercising the live
+  order path again for a deterministically-known reject. No order
+  attempted, no file written. See cycles.log.jsonl.
+
+  Cycle (2026-11-11, ~07:08 ET, cron job `e9e43f16`): sanity check passed
+  (branch v2.1; `TradovateExecutor` still Running, `trader/orders.json`
+  still absent). Flat, within hours. Fresh TradingView data (last bar
+  07:05 ET, streaming): new high 28394.5, pulling back to 28361.5.
+  `signals.evaluate_signal` clear=True both directions again; manual read
+  judged BUY. Not acted on: daily loss limit still breached (-10852.50 <=
+  -600.00) -- same known block as last cycle, did not re-run
+  `process_order`. No order attempted, no file written. See
+  cycles.log.jsonl.
+
+  Cron stopped (2026-11-11, ~07:18 ET, user request "deten el cron"):
+  deleted job `e9e43f16` (`3,13,23,33,43,53 * * * *`). No recurring cron
+  active in this session going forward. Open items at stop time: daily
+  loss limit still breached from the runaway-duplicate-fills incident
+  (resets at the next 17:00-ET boundary), `TradovateExecutor` NSSM
+  service still Running independently of this session's cron, and the
+  underlying duplication bug (background service can race any order file
+  this session writes; neither `load_orders` nor `run_once` cleans up a
+  processed order file) is still unfixed.
+
+  NSSM service stopped too (2026-11-11, ~07:19 ET, user request "deten
+  nssm tambien"): `Stop-Service TradovateExecutor` -- confirmed Stopped.
+  `StartType` is still `Automatic`, so it will come back on a system
+  reboot; left that as-is (not disabled) since the user only asked to
+  stop it, not to disable autostart. Confirmed clean afterward:
+  `trader/orders.json` absent, position still Flat, unchanged. Both the
+  session's cron and the independent background executor are now off --
+  nothing is polling or placing orders against Sim101 until one of them
+  is restarted.
+
+  **NSSM code-version validation + fixes for points 1 and 3 (2026-11-11,
+  ~08:45 ET, user request "valida que la version que esta corriendo en
+  nssm de executor.py sea la correcta. procede arreglar punto 1 y 3")**:
+
+  Validation: `nssm get TradovateExecutor Application/AppParameters/
+  AppDirectory` shows it runs `python -m tradovate_bot.executor` with
+  `AppDirectory=C:\TradingPlatform_v2\Claude_Trading_v2` -- the same repo,
+  not a separately deployed copy. But the service's python.exe process
+  (PID 8704) started 2026-11-10 08:43:44 ET, and `executor.py`'s last
+  commit (`c5a344f`) landed 21:32:00 ET the same day -- confirmed via
+  `git log --format='%ad' -- tradovate_bot/executor.py` that the service
+  predates `ba16113` (11:14, bracket from confirmed fill), `db35d82`
+  (12:59, trading-hours gate), `b6edebe` (19:11, one-position-at-a-time +
+  auto-flatten), and `c5a344f` (21:32, signals.py guard wiring). Python
+  never hot-reloads a running process's own imports, so the service had
+  been serving code from before ALL of those fixes for the entire day,
+  including through tonight's incident -- this fully explains why the
+  service's own repeated polls never refused on "not Flat" and never
+  attached a bracket to any of the 12 duplicate fills. **The service is
+  currently Stopped (per the earlier "deten nssm tambien" request) and
+  must be restarted after this fix, not before, to pick up both these
+  fixes and everything else landed today.**
+
+  Fix for point 1 (order-file race / duplicate resubmission):
+  `tradovate_bot/executor.py` gets a new `claim_orders_file(path)` that
+  atomically renames the orders file to a unique claimed name
+  (`os.rename` -- only one concurrent claimant can ever win, since the
+  source stops existing for everyone else the instant it succeeds).
+  `run_once` now claims the file before loading/processing it, and
+  deletes the claimed copy in a `finally` block afterward, instead of
+  the old `load_orders(orders_path)` loop that left the file in place for
+  literally any poller to pick up again. This closes the exact race that
+  built the 36-contract position, regardless of how many processes are
+  polling or how tight their interval is. Added
+  `test_claim_orders_file_renames_and_returns_claimed_path`,
+  `test_claim_orders_file_returns_none_when_missing`, and
+  `test_run_once_does_not_reprocess_same_orders_file_on_second_call`
+  (calls `run_once` twice against the same path, asserts the second call
+  sees nothing and `write_command` is called only once) as a direct
+  regression test for the incident.
+
+  Fix for point 3 (`position_state` blind after log rotation):
+  `tradovate_bot/position_state.py` gets `find_log_files_newest_first`
+  (like the existing `find_latest_log_file` but returns every matching
+  file, newest-first, instead of just one) and `read_position_state` now
+  loops through them, returning the first file with an actual
+  Flat/Long/Short match instead of only ever looking at the single
+  newest file. A fresh post-rotation file with no position lines yet no
+  longer masks the real last-known state in the previous file -- exactly
+  the manual fallback this session kept doing by hand all night. Added
+  `test_read_position_state_falls_back_to_older_file_when_newest_has_no_match`.
+
+  Verification: `python -m pytest tests/tradovate_bot/ -q` -> 163 total,
+  161 passed / 2 failed, both the same pre-existing `CONSISTENCY_PCT`
+  live-drift mismatches as every other run this session, confirmed
+  unrelated by reverting to the committed value and seeing them pass.
+  Aside finding while verifying: a stale `__pycache__/risk_guard.cpython-
+  314.pyc` (compiled 23:45, before the file's current content) was
+  letting an earlier full-suite run show 0 failures -- cleared
+  `__pycache__` project-wide so results reflect the real on-disk source,
+  not a cached one. Not itself one of the three requested items; flagging
+  since stale bytecode could just as easily have hidden a real
+  regression. Updated the Cron procedure's steps 1, 6, 7, 10, and 12
+  above to describe the new behavior and the NSSM staleness risk going
+  forward.

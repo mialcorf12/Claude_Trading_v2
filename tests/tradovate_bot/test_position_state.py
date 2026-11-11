@@ -156,6 +156,25 @@ def test_read_position_state_picks_newest_en_txt_file_by_mtime(tmp_path):
     assert result.side == "Flat"
 
 
+def test_read_position_state_falls_back_to_older_file_when_newest_has_no_match(tmp_path):
+    # Simulates an NT8 restart/midnight rotation: the newest log file
+    # exists but has no position lines yet (e.g. just connection/startup
+    # chatter), while the account's real last-known position is still in
+    # the previous file. Without carrying it forward, this would
+    # incorrectly read "unknown" even though the account hasn't changed.
+    older = tmp_path / "old.en.txt"
+    newer = tmp_path / "new.en.txt"
+    older.write_text(LONG_LINE, encoding="utf-8")
+    newer.write_text("2026-11-11 00:00:00:000|1|4|Session Break (Version 8.1.8.4)", encoding="utf-8")
+    older_time = os.path.getmtime(str(newer)) - 100
+    os.utime(str(older), (older_time, older_time))
+
+    result = position_state.read_position_state(str(tmp_path), "Sim101")
+
+    assert result.side == "Long"
+    assert result.qty == 2
+
+
 def test_read_position_state_returns_unknown_on_unreadable_file(tmp_path, monkeypatch):
     log_file = tmp_path / "log.en.txt"
     log_file.write_text(LONG_LINE, encoding="utf-8")

@@ -143,6 +143,37 @@ def load_orders(path):
     return []
 
 
+def claim_orders_file(path):
+    """Atomically claims the orders file at `path` for this process by
+    renaming it to a unique name, so no other poller -- another manual
+    run_once() call in this same process, or a wholly separate one like
+    the NSSM-run always-on service -- can ever see and reprocess the same
+    file. os.rename is atomic at the filesystem level (Windows and POSIX
+    alike): if two processes race to claim the same path, only one
+    rename can succeed, since the source stops existing for everyone else
+    the instant it does. Returns the claimed path, or None if there was
+    nothing to claim (file absent, or another process won the race in the
+    same instant) -- never raises.
+
+    This exists because of a real incident (2026-11-11): this session
+    wrote trader/orders.json and called run_once() once, but a separate,
+    independently-running NSSM service (`TradovateExecutor`, already
+    polling the same path every POLL_INTERVAL_SECONDS before this session
+    ever started) kept finding that same file on its own next tick,
+    since nothing deleted or claimed it after the first process handled
+    it. That one order got resubmitted 12 times, building a 36-contract
+    position (12x the 3-contract cap) with no bracket before anyone
+    noticed. Claiming the file the instant run_once reads it closes that
+    race regardless of which process gets there first or how many are
+    polling."""
+    claimed_path = "%s.claimed.%d.%d" % (path, os.getpid(), int(time.time() * 1e6))
+    try:
+        os.rename(path, claimed_path)
+    except OSError:
+        return None
+    return claimed_path
+
+
 def normalize_order(raw_order):
     """Maps a trader-broker-shaped order record onto the fields risk_guard
     and the OIF writer need: symbol, side, qty, type, plus optional entry
@@ -594,9 +625,23 @@ def run_once(orders_path=DEFAULT_ORDERS_PATH, config=None):
             })
         return []
 
-    decisions = []
-    for raw_order in load_orders(orders_path):
-        decisions.append(process_order(raw_order, config=config))
+    claimed_path = claim_orders_file(orders_path)
+    if claimed_path is None:
+        return []
+
+    try:
+        decisions = [process_order(raw_order, config=config) for raw_order in load_orders(claimed_path)]
+    finally:
+        # Delete rather than archive -- step 12 of the cron procedure
+        # ("clean up any one-shot order file after each run") used to be
+        # a manual step the prompt had to remember; claiming+deleting here
+        # makes it a guarantee instead, since a background poller (the
+        # NSSM service, or any future one) has no way to know about that
+        # prompt step at all.
+        try:
+            os.remove(claimed_path)
+        except OSError:
+            pass
     return decisions
 
 

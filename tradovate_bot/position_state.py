@@ -105,23 +105,51 @@ def find_latest_log_file(log_dir):
         return None
 
 
+def find_log_files_newest_first(log_dir):
+    """Finds every `*.en.txt` file in log_dir, newest-first by mtime.
+    Returns [] if log_dir is falsy, not a directory, or has no matching
+    file -- never raises. Used by read_position_state to carry the last
+    known position forward across a log rotation (see its docstring)."""
+    if not log_dir:
+        return []
+    try:
+        if not os.path.isdir(log_dir):
+            return []
+        candidates = glob.glob(os.path.join(log_dir, "*.en.txt"))
+    except OSError:
+        return []
+    try:
+        return sorted(candidates, key=os.path.getmtime, reverse=True)
+    except OSError:
+        return []
+
+
 def read_position_state(log_dir, account):
-    """Thin wrapper: finds the newest `*.en.txt` file under log_dir (see
-    find_latest_log_file) and parses it for account's current position.
-    Fail-closed and exception-free: an unconfigured/missing log_dir, a
-    missing/unreadable log file, or no matching line all return
-    PositionState "unknown" rather than raising or guessing Flat."""
+    """Checks every `*.en.txt` file under log_dir, newest-first, and
+    returns the first one with an actual Flat/Long/Short match for
+    account. NT8 rotates to a brand-new log file on its own restart and at
+    local midnight; right after that, the newest file has no position
+    lines yet even though the account's real position hasn't changed --
+    without this fallback, read_position_state went blind ("unknown")
+    for a while after every rotation until the next real fill wrote
+    something (seen live 2026-11-10/11: a restart's fresh log file left
+    this returning "unknown" for an account that was actually still
+    Flat). Falling back to the previous file(s) is exactly what this
+    session did by hand every time that happened. Still fail-closed and
+    exception-free: an unconfigured/missing log_dir, no matching line in
+    ANY file, or every file being unreadable all return PositionState
+    "unknown" rather than raising or guessing Flat."""
     if not log_dir or not account:
         return _UNKNOWN
 
-    path = find_latest_log_file(log_dir)
-    if path is None:
-        return _UNKNOWN
+    for path in find_log_files_newest_first(log_dir):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        state = parse_position_state(text, account)
+        if state is not _UNKNOWN:
+            return state
 
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
-    except OSError:
-        return _UNKNOWN
-
-    return parse_position_state(text, account)
+    return _UNKNOWN
