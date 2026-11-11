@@ -1,0 +1,18 @@
+ no hay forma de liberar memoria cerrando VS Code sin matar esta sesión y, con ella, el cron activo (85944661). El cron vive solo en memoria de este proceso — no sobrevive a que cierres la ventana/terminal que lo sostiene. No existe un "pausar y reanudar" automático.
+ 
+ Procedimiento si cierras/reinicias VS Code:
+
+1. Antes de cerrar: ya confirmamos Flat. (Si alguna vez hay una posición abierta, mejor esperar a que cierre sola o avisarme para evaluarlo antes de cerrar.)
+2. Cierra VS Code. Esto mata esta sesión y el cron automáticamente — no necesitas borrarlo tú.
+3. Vuelve a abrir VS Code en esta carpeta (C:\TradingPlatform_v2\Claude_Trading_v2) e inicia una nueva sesión de Claude Code.
+4. En la nueva sesión, dile que lea la sección "Cron procedure" de odd/tasks/tradovate-execution-bot.md (está escrita exactamente para este escenario: que el procedimiento sobreviva aunque la sesión no lo haga) y las últimas líneas de Progress, para que se re-oriente.
+5. Pídele que verifique la posición actual contra el log real de NT8 antes de recrear el cron.
+6. Que recree el job con CronCreate (mismo prompt/cadencia: 7,22,37,52 * * * *).
+
++++++++++++++++++
+lee la sección "Cron procedure" de odd/tasks/tradovate-execution-bot.md. verifica la posición actual contra el log real de NT8 antes de recrear el cron. recrea el job con CronCreate (mismo prompt/cadencia: 7,22,37,52 * * * *).
++++++++++++++++++
+
+Eso es todo lo que se pierde al reiniciar: el cron y el contexto de esta conversación puntual — nada del historial de trading, commits, ni el log de ciclos (cycles.log.jsonl), que sí persisten en disco.
+
+Alternativa más barata, sin perder esta sesión: antes de ir directo a cerrar todo, revisa si tienes otras ventanas/carpetas de VS Code abiertas sin relación con esto — los 3 procesos Code.exe "de ventana" (799/451/431 MB) sugieren varias ventanas simultáneas. Cerrar solo esas liberaría memoria sin tocar esta sesión ni el cron.
