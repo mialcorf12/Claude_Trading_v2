@@ -928,6 +928,85 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   `odd/tasks/tradovate-architecture-scaling.md` task 4). The order JSON
   now requires a `bars` field; without it every order is refused. Also
   documents that position-state and signal-quality are now enforced in
-  code (tasks 1/2/4), not only by the cron's own manual judgment. Cron is
-  currently stopped (job `c974db5a` deleted); this is the spec the next
-  (re)creation should copy from.
+  code (tasks 1/2/4), not only by the cron's own manual judgment.
+  Cron resumed (2026-11-10, ~21:39 ET, user request "resume el cron"):
+  recreated as job `85944661`, same 15-min cadence, prompt now points at
+  this doc's Cron procedure section instead of re-embedding the steps.
+  First cycle (run immediately): flat, within hours. Fresh TradingView
+  data (last bar 21:35 ET, streaming): chop -- 28135 high -> 28063 low ->
+  28118 bounce -> pulling back to 28094.75. Cross-checked with
+  `signals.evaluate_signal`: both buy and sell flagged (4 reversals in
+  the trailing 9-bar window), confirming the manual read. Skipped. No
+  order attempted. See cycles.log.jsonl.
+  Cycle (2026-11-10, ~21:57 ET, first scheduled cron fire): sanity check
+  passed (branch v2.1, check_trading_hours/signals/position_state all
+  present). Flat, within hours. Fresh TradingView data (last bar 21:55
+  ET, streaming): still chop, same range -- 28063 low -> 28112 bounce ->
+  28095 pullback -> 28117.75 breakout -> now pulling back to 28106.
+  `signals.evaluate_signal` flags both buy/sell (3 reversals in trailing
+  window), confirming the read. Skipped. No order attempted. See
+  cycles.log.jsonl.
+  Cycle (2026-11-10, ~22:11 ET): sanity check passed. Flat, within
+  hours. Fresh TradingView data (last bar 22:10 ET, streaming): a real
+  high-volume breakout (vol ~12.9k vs ~5k avg), 28115 -> 28163.25, with
+  a genuine pullback earlier in the lookback before it -- read as BUY.
+  **First real disagreement between manual read and the code backstop**
+  (Cron procedure step 9): attempted the order through the live
+  `executor.process_order`; `signals.evaluate_signal` refused it as chop
+  (3 reversals in the trailing 9-bar window, which still spans the
+  preceding choppy range). Respected the refusal -- confirmed via
+  `decisions.log.jsonl` and an empty NT8 incoming folder that nothing
+  was sent. Also noted: telemetry `daily_realized_pnl` is -549, within
+  $51 of the $600 daily loss limit (not breached, just close). See
+  cycles.log.jsonl.
+  Cron recreated (2026-11-10, ~22:3x ET, user request "verifica la posicion
+  actual contra el log real de NT8 antes de recrear el cron"): verified
+  against the real NT8 log (`log.20261110.00000.en.txt`) before recreating
+  -- last position-state line is Flat at 18:52:06 ET (full close of the
+  18:43 Long entry), no fills since; the only later event is a transient
+  "Symbol is inaccessible" data-feed error at 21:46:53 ET, already recovered,
+  not a position change. Recreated as job `2c28893e`, cadence changed to
+  `7,22,37,52 * * * *` (was a 15-min cadence on job `85944661`), prompt still
+  points at this doc's Cron procedure section instead of re-embedding the
+  steps.
+  Telemetry bug investigated and partially fixed (2026-11-10, ~22:3x ET,
+  user report: "daily_realized_pnl is -549 pero NT8 muestra -200.50"):
+  confirmed live via `tradovate_bot/state/account_telemetry.json` --
+  `total_realized_profit` (-200.5) matched NT8 exactly, but
+  `daily_realized_pnl` (-549) didn't, because the AddOn's own
+  `realizedPnlAtDayStart` baseline (+348.5) had desynced from NT8's
+  `RealizedProfitLoss` counter. Initially misdiagnosed the 17:00-ET
+  day-boundary in `AccountTelemetryAddOn.cs` as the cause and changed it to
+  18:00 -- **wrong**, caught before compiling: `odd/tasks/
+  eastern-time-migration.md` (T4) already records that 17:00 ET was an
+  explicit user decision, not a guess, so it was reverted back to 17:00.
+  The actual fix kept: a divergence guard in `ExportOnce` that compares the
+  RealizedProfitLoss-based daily delta against the CashValue-based one and
+  withholds the export (instead of writing a bad number) if they disagree
+  by more than $5 -- lets `account_state.py`'s existing staleness fail-close
+  take over instead of risk_guard trusting a desynced counter. Deployed the
+  corrected source to the live NT8 copy (`...\\NinjaTrader 8\\bin\\Custom\\
+  AddOns\\AccountTelemetryAddOn.cs`, confirmed matching via diff) but **not
+  yet recompiled** -- user still needs to open NinjaScript Editor and press
+  F5 per `RUNBOOK_VPS.md`'s documented step; the running DLL is unchanged
+  until then. Root cause of the original desync (why the two NT8 counters
+  disagreed in the first place) not identified -- no AddOn startup/reset
+  log lines found in the `.en.txt` NT8 log to pin an exact restart time.
+  Cycle (2026-11-10, ~22:40 ET, cron job `2c28893e`): sanity check passed
+  (branch v2.1, check_trading_hours/signals/position_state all present and
+  wired). Flat since 18:52:06 ET (confirmed against NT8 log), within
+  hours. Fresh TradingView data (last bar 22:40 ET, streaming): the 22:05
+  high-volume breakout (28115 -> 28163.25, already read as BUY in the
+  prior ~22:11 cycle and refused by signals as chop) extended to 28186.25
+  then faded back to ~28157-28163 -- a 30-point range over the last ~35
+  min. `signals.evaluate_signal` confirmed by direct call: chase guard
+  clear (a real retracement, 28176.25 -> 28157.5, exists in the trailing
+  8-bar window) but chop guard fired for BOTH directions (3 swing
+  highs/lows in the trailing 9-bar window, CHOP_SWING_THRESHOLD=2) --
+  manual read agreed before running the code, so skipped without
+  attempting an order through the executor. Also noted: NT8 logged a
+  transient MNQ "Symbol is inaccessible" data/tick subscription error at
+  21:46:53 ET with no later recovery line visible in the log -- doesn't
+  block this skip (TradingView bars are the actual data source) but worth
+  confirming before the next cycle that does have a signal, since it could
+  affect order routing through NT8 ATI. See cycles.log.jsonl.

@@ -66,6 +66,19 @@ namespace NinjaTrader.NinjaScript.AddOns
         private double cashValueAtDayStart;
         private DateTime currentTradingDayBoundary = DateTime.MinValue;
 
+        // RealizedProfitLoss and CashValue are two independent NT8 account
+        // counters; both daily baselines are captured at the same instant
+        // (ResetDayBoundaryIfNeeded), so the "today" delta computed from
+        // either one should match within commission-sized noise. If NT8
+        // resets/adjusts one counter without the other underneath us (seen
+        // live 2026-11-10: daily_realized_pnl read -549 while NT8's own
+        // display, driven by CashValue, read -200.50), the two deltas
+        // diverge sharply. Skipping the export in that case leaves the last
+        // good file in place; it ages past max_staleness_seconds and
+        // account_state.py's existing fail-closed path rejects it, instead
+        // of risk_guard trusting a silently wrong number.
+        private const double DailyPnlDivergenceToleranceDollars = 5.0;
+
         // America/New_York via the Windows tz id "Eastern Standard Time" (it
         // observes DST despite the name). Never compare this Eastern
         // wall-clock DateTime against DateTime.Now/UtcNow directly -- Kind is
@@ -174,6 +187,19 @@ namespace NinjaTrader.NinjaScript.AddOns
                 double currentBalance = monitoredAccount.Get(AccountItem.CashValue, Currency.UsDollar);
                 double totalRealizedProfit = monitoredAccount.Get(AccountItem.RealizedProfitLoss, Currency.UsDollar);
                 double dailyProfitToday = totalRealizedProfit - realizedPnlAtDayStart;
+                double dailyCashProfitToday = currentBalance - cashValueAtDayStart;
+
+                if (Math.Abs(dailyProfitToday - dailyCashProfitToday) > DailyPnlDivergenceToleranceDollars)
+                {
+                    NinjaTrader.Code.Output.Process(
+                        string.Format(
+                            "AccountTelemetryAddOn: daily P&L sources diverged (realized-based={0:F2}, " +
+                            "cash-based={1:F2}) -- withholding this export so the stale telemetry file " +
+                            "ages out and risk_guard fails closed instead of trusting a wrong number.",
+                            dailyProfitToday, dailyCashProfitToday),
+                        PrintTo.OutputTab1);
+                    return;
+                }
 
                 DateTimeOffset easternNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, EasternZone);
 
@@ -198,9 +224,12 @@ namespace NinjaTrader.NinjaScript.AddOns
         // timezone the VPS happens to be set to. The boundary is computed by
         // converting a known UTC instant (DateTimeOffset.UtcNow) rather than
         // constructing local time from scratch, so DST transition days are
-        // not ambiguous. This specific 17:00-ET boundary is still not
-        // verified against a live NT8/Lucid session -- see
-        // tradovate_bot/README.md's verification checklist.
+        // not ambiguous. This 17:00-ET boundary is an explicit user
+        // decision (odd/tasks/eastern-time-migration.md, T4) -- do not
+        // change it to 18:00 without the user re-confirming that decision;
+        // a 2026-11-10 report of `daily_realized_pnl` disagreeing with NT8
+        // ($-549 vs $-200.50) turned out to be a separate problem, caught by
+        // the divergence guard in ExportOnce below, not this boundary hour.
         private void ResetDayBoundaryIfNeeded(bool force)
         {
             DateTimeOffset easternNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, EasternZone);
