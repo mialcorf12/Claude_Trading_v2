@@ -133,10 +133,13 @@ Configurar las variables a nivel de máquina (`Machine`) para garantizar la pers
 [Environment]::SetEnvironmentVariable("NT8_INCOMING_DIR", "C:\Users\Administrator\Documents\NinjaTrader 8\incoming", "Machine")
 [Environment]::SetEnvironmentVariable("NT8_OUTGOING_DIR", "C:\Users\Administrator\Documents\NinjaTrader 8\outgoing", "Machine")
 [Environment]::SetEnvironmentVariable("NT8_ACCOUNT_ID", "Sim101", "Machine")
+[Environment]::SetEnvironmentVariable("NT8_LOG_DIR", "C:\Users\Administrator\Documents\NinjaTrader 8\log", "Machine")
 [Environment]::SetEnvironmentVariable("ACCOUNT_TELEMETRY_JSON_PATH", "C:\TradingPlatform_v2\Claude_Trading_v2\tradovate_bot\state\account_telemetry.json", "Machine")
 [Environment]::SetEnvironmentVariable("ACCOUNT_TELEMETRY_EXPORT_INTERVAL_SECONDS", "5", "Machine")
 
 ```
+
+> **`NT8_LOG_DIR`** (agregada 2026-11-10, ver `odd/tasks/tradovate-architecture-scaling.md` tarea 1): carpeta del log diagnóstico propio de NT8 (`*.en.txt`), **distinta** de `NT8_OUTGOING_DIR`. `tradovate_bot/position_state.py` la usa para el guard de una-posición-a-la-vez y el cierre automático al cerrar el mercado. **Sin esta variable, `current_position()` siempre devuelve `"unknown"` y el bot rechaza toda orden nueva** (fail-closed) — es obligatoria, no opcional, para que el bot vuelva a operar.
 
 > **Importante:** Cerrar la consola actual y abrir una nueva ventana de PowerShell para que la sesión cargue las nuevas variables de entorno a nivel de sistema.
 

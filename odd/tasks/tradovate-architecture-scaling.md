@@ -183,3 +183,15 @@ branch needed. Conventional commit messages, no AI co-author attribution
   `CONSISTENCY_PCT=2.00` override in `risk_guard.py` (not touched by this
   task) as every prior task this session; no previously-passing test
   needed any change, confirming the additive constraint held.
+- 2026-11-10: Code review before wiring `signals.py` (user request) found
+  that `NT8_LOG_DIR` (new in task 1) was never added to
+  `tradovate_bot/RUNBOOK_VPS.md`'s env-var step and was never set on the
+  real VPS -- without it, `current_position()` always returns "unknown"
+  and `process_order` refuses every new order (fail-closed as designed,
+  but silently stops all trading until set). Fixed: added
+  `NT8_LOG_DIR = C:\Users\Administrator\Documents\NinjaTrader 8\log` to
+  `RUNBOOK_VPS.md`'s Step 5 env-var block with an explicit warning note.
+  Everything else reviewed clean: `config=None` paths in `executor.py`/
+  `risk_guard.py` read module globals exactly as before, full suite still
+  152 passed / 2 known-failed, `git status` shows only the standing
+  `CONSISTENCY_PCT=2.00` + task-doc diffs.
