@@ -195,3 +195,28 @@ branch needed. Conventional commit messages, no AI co-author attribution
   `risk_guard.py` read module globals exactly as before, full suite still
   152 passed / 2 known-failed, `git status` shows only the standing
   `CONSISTENCY_PCT=2.00` + task-doc diffs.
+- 2026-11-10: Manual validation against the real NT8 log (user request,
+  after confirming `NT8_LOG_DIR` is now set at Machine scope via
+  `[Environment]::GetEnvironmentVariable(..., "Machine")`). Ran
+  `position_state.read_position_state()` with the real log dir and found a
+  genuine parsing bug: NT8 writes two line shapes that both match the
+  existing regexes -- execution-leg lines (contain `Execution=`, whose own
+  `Quantity=`/`Market position=` describe one fill, not the account's net
+  position) and net-position lines (contain `Average price=`, the
+  authoritative net state). `parse_position_state` took the latest
+  matching line regardless of shape; it returned the correct `Flat, qty=0`
+  tonight only because NT8 happened to write the net line immediately
+  after each leg in every observed sequence -- not a guaranteed ordering.
+  Fixed: skip any line containing `Execution=` before matching, so only
+  net-position lines are ever read. Test-first: added
+  `test_parse_position_state_ignores_trailing_execution_leg_line` and
+  `test_parse_position_state_execution_leg_lines_alone_return_unknown`
+  using real lines from tonight's live log
+  (`log.20261110.00000.en.txt`), confirmed RED (both failed before the
+  fix), then GREEN. Full suite: `python -m pytest tests/tradovate_bot/ -v`
+  -> 154 passed, 2 failed -- the same pre-existing `CONSISTENCY_PCT=2.00`
+  failures, no regressions. Re-verified against the real log after the
+  fix: still correctly `Flat, qty=0`.
+  Caveat: `signals.py` is still unwired, by design -- this validation
+  covered only `position_state.py`/`current_position()` against live
+  data, not the signal-guard thresholds, which remain fixture-only.

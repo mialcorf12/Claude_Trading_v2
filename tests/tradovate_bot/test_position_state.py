@@ -33,6 +33,22 @@ OTHER_ACCOUNT_FLAT_LINE = (
     "2026-11-10 18:55:06:109|1|64|Instrument='MNQ 12-26' Account='Sim202' "
     "Average price=0 Quantity=0 Market position=Flat Operation=Remove"
 )
+# Real lines pulled from tonight's live NT8 log (log.20261110.00000.en.txt,
+# 2026-11-10): a partial-fill close emits an execution-leg line (type |1|8|,
+# has "Execution=") immediately before the authoritative net-position line
+# (type |1|64|, has "Average price="). The leg's own Quantity/Market
+# position describe that one fill, not the account's net position, and
+# must never be mistaken for it.
+EXECUTION_LEG_SHORT_LINE = (
+    "2026-11-10 18:52:06:108|1|8|Execution='b1426f7c713a4c6596b5a609dfa264d7' "
+    "Instrument='MNQ 12-26' Account='Sim101' Exchange=Default Price=27938.5 "
+    "Quantity=1 Market position=Short Operation=Operation_Add "
+    "Order='e024131192c44b9db0cf4b0e2b278981' Time='11/10/2026 6:52 PM'"
+)
+NET_LONG_AFTER_PARTIAL_LINE = (
+    "2026-11-10 18:52:06:109|1|64|Instrument='MNQ 12-26' Account='Sim101' "
+    "Average price=27971.75 Quantity=2 Market position=Long Operation=Update"
+)
 
 
 def test_parse_position_state_returns_long_with_qty():
@@ -68,6 +84,25 @@ def test_parse_position_state_ignores_other_accounts():
     # guessed flat or guessed open from another account's lines.
     result_other = position_state.parse_position_state(text, "Sim101")
     assert result_other.side == "unknown"
+
+
+def test_parse_position_state_ignores_trailing_execution_leg_line():
+    # The execution-leg line (a partial-fill fragment) comes after the net
+    # position line in the file, same as real NT8 output. The leg's
+    # Quantity=1/Short must not override the real net position of
+    # Quantity=2/Long established by the line before it.
+    text = "\n".join([NET_LONG_AFTER_PARTIAL_LINE, EXECUTION_LEG_SHORT_LINE])
+    result = position_state.parse_position_state(text, "Sim101")
+    assert result.side == "Long"
+    assert result.qty == 2
+
+
+def test_parse_position_state_execution_leg_lines_alone_return_unknown():
+    # No net-position line for this account exists in the text -- only
+    # execution-leg fragments. Fail closed to unknown rather than guessing
+    # the net position from a leg's own Quantity/Market position.
+    result = position_state.parse_position_state(EXECUTION_LEG_SHORT_LINE, "Sim101")
+    assert result.side == "unknown"
 
 
 def test_parse_position_state_empty_content_returns_unknown():

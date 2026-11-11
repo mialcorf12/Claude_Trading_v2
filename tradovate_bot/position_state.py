@@ -20,6 +20,13 @@ caller must explicitly check for it and refuse a new entry / flatten
 defensively, exactly like an ambiguous account_state read in
 account_state.py. No I/O exception escapes read_position_state -- it
 never raises.
+
+NT8 also writes execution-leg lines (per-fill fragments, containing
+"Execution=") that carry their own Account=/Market position=/Quantity=
+describing that one fill, not the account's net position -- these are
+skipped; only the net-position line it writes alongside each leg
+(containing "Average price=") is authoritative. Verified against a real
+live NT8 log, 2026-11-10.
 """
 import glob
 import os
@@ -55,6 +62,15 @@ def parse_position_state(log_text, account):
 
     latest = None
     for line in log_text.splitlines():
+        if "Execution=" in line:
+            # Execution-leg lines (per-fill fragments, one per partial
+            # fill) also carry Account=/Market position=/Quantity=, but
+            # those describe that one fill, not the account's net
+            # position -- only the net-position line NT8 writes alongside
+            # each leg (recognizable by "Average price=", no "Execution=")
+            # is authoritative. Verified against a real live NT8 log,
+            # 2026-11-10 (see odd/tasks/tradovate-architecture-scaling.md).
+            continue
         account_match = _ACCOUNT_RE.search(line)
         if not account_match or account_match.group(1) != account:
             continue
