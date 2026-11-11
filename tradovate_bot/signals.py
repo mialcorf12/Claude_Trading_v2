@@ -57,13 +57,21 @@ Threshold choices, documented here so they don't silently drift either:
     current one (cycle 23's pullback was ~3 bars before the resumption),
     short enough that a pullback from hours ago doesn't excuse chasing
     the current extension.
-  - CHOP_WINDOW_BARS = 9 and CHOP_SWING_THRESHOLD = 2: the task's own
-    phrasing says to look at "roughly the last 30-45 minutes" -- 9 bars
-    of 5-minute data is 45 minutes. Two or more swing highs/lows in that
-    window means price has reversed at least twice, i.e. "a price zone
-    that has already reversed direction multiple times," per the rule's
-    own wording -- not just a single pullback, which is normal and
-    expected inside any real trend.
+  - CHOP_WINDOW_BARS = 9 and CHOP_SWING_THRESHOLD = 3 (raised from 2 on
+    2026-11-10): the task's own phrasing says to look at "roughly the
+    last 30-45 minutes" -- 9 bars of 5-minute data is 45 minutes. A
+    single normal pullback-then-continuation already produces exactly 2
+    swing points (one high, one low), so a threshold of 2 fired on the
+    very first clean retracement inside an otherwise healthy trend --
+    confirmed live: three consecutive overnight cycles skipped a
+    sustained uptrend (28198 -> 28216.75 -> 28220, each a HIGHER high
+    than the last) because each one's lone pullback tripped the old
+    threshold. Cycle 20's actual scenario (a bounce to a LOWER high than
+    the prior swing, pulling back again) needs a genuine second reversal
+    to reproduce, which takes 3+ swing points, not 2. Raising the
+    threshold to 3 is meant to let a single confirmed pullback through
+    (matching cycle 23's winning pattern) while still catching true
+    repeated back-and-forth.
   - MIN_BARS_FOR_CHASE_CHECK / MIN_BARS_FOR_CHOP_CHECK = 5: a guard needs
     at least one full streak's worth of bars (MIN_CHASE_STREAK + 1) or
     enough bars to see a swing with two confirmed sides, respectively,
@@ -79,7 +87,7 @@ CHASE_LOOKBACK_BARS = 8
 MIN_BARS_FOR_CHASE_CHECK = MIN_CHASE_STREAK + 1  # 5
 
 CHOP_WINDOW_BARS = 9
-CHOP_SWING_THRESHOLD = 2
+CHOP_SWING_THRESHOLD = 3
 MIN_BARS_FOR_CHOP_CHECK = 5
 
 _OHLC_FIELDS = ("open", "high", "low", "close")
