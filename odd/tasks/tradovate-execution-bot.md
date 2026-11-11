@@ -92,6 +92,86 @@ separate signal (Claude) from execution (deterministic bot).
 6. [x] NEW: NinjaScript AddOn for read-only account telemetry. `ninjatrader_addon/AccountTelemetryAddOn.cs` — unverified against live NT8 (see acceptance criteria caveat above).
 7. [x] NEW: VPS deployment runbook (git clone/pull on Windows VPS, Python install, NT8 ATI settings to enable, AddOn install into NT8, how to run executor unattended on Windows — NSSM or Task Scheduler, not systemd). `tradovate_bot/RUNBOOK_VPS.md`. Written for the user to execute manually via RDP; not run against the real VPS yet.
 
+## Cron procedure (current, authoritative — read this before the next
+## time the overnight trading cron is (re)created, whether via /loop or
+## CronCreate directly)
+The cron prompt itself has only ever existed as inline prompt text passed
+to CronCreate at schedule time, recreated from scratch (and re-copied by
+hand from the previous version plus whatever changed) every time it was
+updated -- there has never been a standalone prompt file in this repo.
+That's why it has drifted before (see the 2026-11-10 incident below where
+a branch checkout under this session reverted three fixes that had
+already shipped). This section is the fix for that: it's the one place
+that should be kept current, so the next cron creation copies from here
+instead of from memory.
+
+1. Check current position first. As of task 1
+   (`odd/tasks/tradovate-architecture-scaling.md`), this is now also
+   enforced automatically in code: `executor.process_order` refuses a new
+   entry whenever `position_state.read_position_state()` reports anything
+   other than Flat, and `executor.run_once` auto-sends CLOSEPOSITION when
+   the market is closed and a position is open. The cron prompt's own
+   manual check (tailing the newest `*.en.txt` under `NT8_LOG_DIR` for
+   `Account='Sim101'` + `Market position=`) is now a backup, not the only
+   enforcement -- keep doing it anyway, since it lets the LLM skip the
+   cycle early with a clear status line instead of relying on the code
+   path's refusal to notice.
+2. If flat and within trading hours: fetch fresh MNQ bars from TradingView
+   (`mcp-tv-get-ohlcv` / `mcp-tv-get-symbol-data`, symbol `CME_MINI:MNQ1!`,
+   5-minute bars) -- not Yahoo (confirmed stale by ~11-15 min on
+   2026-11-10, see Progress). Confirm `update_mode: "streaming"` and that
+   the latest bar's timestamp is recent before trusting the data.
+3. Judge BUY/SELL from genuine structure in the bars: prefer an entry on a
+   confirmed pullback over chasing an already-extended move with zero
+   retracement (cycle 18's loss), and read a zone that has already
+   reversed direction multiple times recently as chop, not a clean signal
+   (cycle 20). As of task 2/4, both rules are now ALSO enforced in code --
+   `tradovate_bot/signals.py`'s `evaluate_signal(bars, direction)` runs
+   automatically inside `executor.process_order` and will refuse the
+   order even if this step's judgment misses it. The cron's own read is
+   still what picks the candidate direction (or skips); code is the
+   backstop, not a replacement for actually looking at the bars.
+4. If the data gives no clear directional edge, skip the trade this cycle
+   (log it, reschedule) rather than forcing one.
+5. If there's a clear signal, compute stop_loss_points/take_profit_points
+   for 3 contracts ($2/contract/point MNQ multiplier, $6/point total; TP
+   $100 -> 16.75 pts, SL $200 -> 33.25 pts), tick-rounded, oriented for
+   BUY vs SELL.
+6. Write the order JSON to `trader/orders.json` (or the one-shot path used
+   for a manual/off-cycle run) with: `symbol` "MNQ", `side`, `qty` 3,
+   `type` "market", `stop_loss_points`, `take_profit_points`, **and now
+   `bars`: the exact same OHLC bar list fetched in step 2, in the shape
+   `tradovate_bot/signals.py` expects (a list of dicts with `open`,
+   `high`, `low`, `close` finite numbers, most recent last)** -- added
+   2026-11-10 when `signals.py` was wired into `process_order`
+   (`odd/tasks/tradovate-architecture-scaling.md` task 4). **Required,
+   not optional: `process_order` now fails closed and refuses any entry
+   order with no/malformed `bars`, exactly like a missing telemetry file
+   or an unreadable position log.** Omitting this field is the same class
+   of mistake as the `NT8_LOG_DIR` deployment gap -- the bot will reject
+   every order, silently, until this is fixed.
+7. Run it through the executor (same invocation used for prior cycles --
+   see Progress for the exact env vars/script path used that session).
+8. Verify the real outcome against NT8's own log and the outgoing/incoming
+   folders -- never report success without reading NT8's own confirmation.
+9. If risk_guard rejects (daily loss, EOD floor, consistency, trading
+   hours, or now the signals guard) log the exact reason and respect it --
+   these are hard protections, not something to route around. A signals-
+   guard rejection specifically means the trade would have been
+   chasing/chop by the same rule this cron is already supposed to be
+   applying in step 3 -- if that happens often, it's a sign step 3's own
+   judgment and the code guard disagree, worth a look, not a bug to
+   route around.
+10. Sanity-check the branch and that `check_trading_hours`/`signals`/
+    `position_state` are actually present in the live `executor.py`/
+    `risk_guard.py` before trusting the code (added after the 2026-11-10
+    branch-checkout incident below, where a `git checkout main` under
+    this session silently reverted three already-shipped fixes).
+11. Append one short line per cycle to this doc's Progress section
+    (timestamp, decision, outcome) and the full structured record to
+    `tradovate_bot/state/cycles.log.jsonl` via `executor.log_cycle(...)`.
+12. Clean up any one-shot order file after each run.
+
 ## Progress
 - 2026-11-09: Created. First implementation pass (direct Tradovate REST/WS
   client + risk_guard + executor), 45 tests passing against mocks.
@@ -830,3 +910,24 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   steady rally since the 18:00 ET reopen (27859.5 -> 27946, +86.5 pts
   over 20 min) with no pullback yet. Per the prefer-a-pullback rule,
   waited rather than chase. Skipped (step 3). No order attempted.
+  Cycle (2026-11-10, ~18:43 ET): flat, BUY on confirmed pullback,
+  filled 27971.75, bracket OK (target 27988.50). Noticed an EOD
+  day-boundary rollover in telemetry right after (total_realized_profit
+  reset to 0) -- flagged for later verification, see cycles.log.jsonl
+  for full detail (per the new structured-log convention, this doc's
+  lines stay short from here on).
+  Position closed via STOP-LOSS (18:52:06 ET): the 18:43 Long closed at
+  27938.25, loss ~$201.
+  Cycle (2026-11-10, ~18:58 ET): flat. Fresh data: pullback from
+  27980.5 high, only one small uptick after the decline -- not a
+  confirmed pullback-then-continuation. Skipped (step 3, weak/chop
+  signal). No order attempted. See cycles.log.jsonl.
+  Added the "Cron procedure" section above (2026-11-10, user request:
+  "update that cron prompt/procedure now", after `signals.py` was wired
+  into `process_order` -- see
+  `odd/tasks/tradovate-architecture-scaling.md` task 4). The order JSON
+  now requires a `bars` field; without it every order is refused. Also
+  documents that position-state and signal-quality are now enforced in
+  code (tasks 1/2/4), not only by the cron's own manual judgment. Cron is
+  currently stopped (job `c974db5a` deleted); this is the spec the next
+  (re)creation should copy from.
