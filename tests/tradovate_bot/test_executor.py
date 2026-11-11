@@ -13,6 +13,7 @@ from unittest import mock
 
 import pytest
 
+from tradovate_bot import config as config_module
 from tradovate_bot import executor, position_state, time_utils
 
 # Wednesday 2026-11-11, 10:00 ET -- unambiguously within trading hours, so
@@ -600,6 +601,101 @@ def test_run_once_processes_orders_normally_when_within_hours(isolated_state, mo
     assert len(decisions) == 1
     assert decisions[0].allow is True
     write_command.assert_called_once()
+
+
+# ---------------------------------------------------------------- optional explicit BotConfig
+# (odd/tasks/tradovate-architecture-scaling.md task 3: purely additive --
+# every test above calls with no config argument at all and must keep
+# behaving exactly as it always has, reading the same module globals the
+# isolated_state fixture monkeypatches.)
+
+def _make_config(isolated_state, **overrides):
+    defaults = dict(
+        account_id="ALT_ACCOUNT",
+        instrument="MNQ 03-27",
+        allowed_symbol="MNQ",
+        max_contracts=3,
+        incoming_dir=str(isolated_state / "incoming"),
+        outgoing_dir=str(isolated_state / "outgoing"),
+        log_dir=str(isolated_state / "log"),
+        telemetry_json_path="",
+        telemetry_max_staleness_seconds=30.0,
+        fill_timeout_seconds=5.0,
+        fill_poll_interval_seconds=0.5,
+    )
+    defaults.update(overrides)
+    return config_module.BotConfig(**defaults)
+
+
+def test_build_place_command_uses_config_account_and_instrument_override(isolated_state):
+    order = executor.normalize_order({"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market"})
+    cfg = _make_config(isolated_state)
+
+    command = executor.build_place_command(order, config=cfg)
+
+    assert command == "PLACE;ALT_ACCOUNT;MNQ 03-27;BUY;2;MARKET;;;DAY;;;;"
+
+
+def test_build_place_command_config_none_behaves_exactly_like_before(isolated_state):
+    order = executor.normalize_order({"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market"})
+
+    command_omitted = executor.build_place_command(order)
+    command_explicit_none = executor.build_place_command(order, config=None)
+
+    assert command_omitted == command_explicit_none == "PLACE;SIM101;MNQ 12-26;BUY;2;MARKET;;;DAY;;;;"
+
+
+def test_build_place_command_explicit_account_param_still_wins_over_config(isolated_state):
+    # account= is the more specific, already-existing override -- config
+    # fields replace module globals, not an explicitly passed account.
+    order = executor.normalize_order({"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market"})
+    cfg = _make_config(isolated_state)
+
+    command = executor.build_place_command(order, account="EXPLICIT_ACCOUNT", config=cfg)
+
+    assert command == "PLACE;EXPLICIT_ACCOUNT;MNQ 03-27;BUY;2;MARKET;;;DAY;;;;"
+
+
+def test_process_order_with_config_uses_overridden_account_and_instrument(isolated_state, monkeypatch):
+    telemetry_path = isolated_state / "telemetry.json"
+    telemetry_path.write_text(json.dumps({
+        "updated_at": time_utils.now_et_iso(),
+        "daily_realized_pnl": 0.0,
+        "eod_balance_last_close": 25000.0,
+        "current_balance": 25000.0,
+        "daily_profit_today": 0.0,
+        "total_realized_profit": 0.0,
+    }), encoding="utf-8")
+    cfg = _make_config(isolated_state, telemetry_json_path=str(telemetry_path))
+    # current_position is monkeypatched here (not relying on a real NT8
+    # log file under cfg.log_dir) to isolate this test to the
+    # account/instrument override -- position_state's own config-aware
+    # behavior isn't this task's concern.
+    monkeypatch.setattr(executor, "current_position", lambda config=None: position_state.PositionState("Flat", 0))
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market"}
+
+    decision = executor.process_order(raw_order, config=cfg)
+
+    assert decision.allow is True
+    incoming_dir_arg, command_arg = write_command.call_args[0]
+    assert incoming_dir_arg == cfg.incoming_dir
+    assert command_arg == "PLACE;ALT_ACCOUNT;MNQ 03-27;BUY;2;MARKET;;;DAY;;;;"
+
+
+def test_process_order_config_none_behaves_exactly_like_omitting_it(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market"}
+
+    decision_explicit_none = executor.process_order(raw_order, config=None)
+
+    assert decision_explicit_none.allow is True
+    incoming_dir_arg, command_arg = write_command.call_args[0]
+    assert incoming_dir_arg == executor.NT8_INCOMING_DIR
+    assert command_arg == "PLACE;SIM101;MNQ 12-26;BUY;2;MARKET;;;DAY;;;;"
 
 
 def test_log_cycle_accepts_a_minimal_partial_record(isolated_state):

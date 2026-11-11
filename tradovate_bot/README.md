@@ -27,6 +27,8 @@ NinjaScript AddOn for account telemetry.
   `trader-broker`'s `trader/orders.json`), risk-checks it against account
   state from the AddOn's telemetry file, places it only if every check
   passes via the OIF writer, and logs every decision and fill.
+- `config.py` -- optional explicit `BotConfig` identity/transport bundle
+  (see "Multi-instance config" below).
 - `client.py` -- **historical reference only, not used.** The original
   direct Tradovate REST/WS client. Confirmed dead end: Tradovate
   prop-firm/evaluation accounts (incl. Lucid) cannot register API Access.
@@ -183,6 +185,40 @@ guess from the filename. These records are used for fill-logging only, not
 for any risk decision. Verify the real field semantics against actual
 output once ATI is enabled on the VPS, before trusting any specific field
 from it for anything beyond logging.
+
+## Multi-instance config (`BotConfig`)
+
+Every identity/transport value above (`NT8_INCOMING_DIR`,
+`NT8_OUTGOING_DIR`, `NT8_ACCOUNT_ID`, `NT8_INSTRUMENT`, `NT8_LOG_DIR`,
+`ACCOUNT_TELEMETRY_JSON_PATH`, `ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS`,
+the fill-wait timeout/poll interval, plus `risk_guard`'s `ALLOWED_SYMBOL`/
+`MAX_CONTRACTS`) can now also be passed explicitly, per call, as a
+`tradovate_bot.config.BotConfig` -- a frozen dataclass with fields
+`account_id`, `instrument`, `allowed_symbol`, `max_contracts`,
+`incoming_dir`, `outgoing_dir`, `log_dir`, `telemetry_json_path`,
+`telemetry_max_staleness_seconds`, `fill_timeout_seconds`,
+`fill_poll_interval_seconds`.
+
+```python
+from tradovate_bot import config, executor
+
+cfg = config.BotConfig.from_env()  # reproduces today's env-var configuration exactly
+decision = executor.process_order(order, config=cfg)
+```
+
+`BotConfig.from_env()` reads the exact same env vars/defaults `executor.py`
+reads at import time, so it's a drop-in stand-in for "the bot's current
+configuration." This is purely additive (see
+odd/tasks/tradovate-architecture-scaling.md task 3): every function in
+`executor.py`/`risk_guard.py` keeps an optional `config=None` parameter
+that, when omitted, reads the module-level globals exactly as before --
+nothing here requires passing a config, and running a second
+account/instrument side by side in the same process (instead of a second
+process with different env vars) is now possible by constructing two
+different `BotConfig`s and passing each to its own calls, though
+`executor.py` has no multi-instance *loop* (e.g. a second `main()` running
+concurrently against a second config) wired up yet -- that's a separate
+future decision.
 
 ## Starting / stopping
 

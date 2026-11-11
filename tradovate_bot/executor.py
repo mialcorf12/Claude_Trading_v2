@@ -179,16 +179,28 @@ def normalize_order(raw_order):
     return normalized
 
 
-def fetch_account_state():
+def fetch_account_state(config=None):
     """Reads current account state from the NinjaScript AddOn's telemetry
     file. Returns {} (triggering risk_guard's own fail-closed check) on any
     missing file, stale data, or malformed payload -- account_state.py
-    itself never raises for those cases."""
-    if not ACCOUNT_TELEMETRY_JSON_PATH:
+    itself never raises for those cases.
+
+    `config`, when given, supplies telemetry_json_path/
+    telemetry_max_staleness_seconds instead of the module-level
+    ACCOUNT_TELEMETRY_JSON_PATH/ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS for
+    this call only; None (the default) changes nothing (see
+    odd/tasks/tradovate-architecture-scaling.md task 3)."""
+    telemetry_path = config.telemetry_json_path if config is not None else ACCOUNT_TELEMETRY_JSON_PATH
+    max_staleness = (
+        config.telemetry_max_staleness_seconds
+        if config is not None
+        else ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS
+    )
+    if not telemetry_path:
         return {}
     return account_state.read_account_state(
-        ACCOUNT_TELEMETRY_JSON_PATH,
-        max_staleness_seconds=ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS,
+        telemetry_path,
+        max_staleness_seconds=max_staleness,
     )
 
 
@@ -217,24 +229,34 @@ _TYPE_TO_ATI_ORDER_TYPE = {"market": "MARKET", "limit": "LIMIT", "stop": "STOPMA
 NT8_INSTRUMENT = "MNQ 12-26"
 
 
-def build_place_command(order, account=None):
+def build_place_command(order, account=None, config=None):
     """Maps our normalized order onto an OIF PLACE command string for the
-    order's own entry. account defaults to the module-level NT8_ACCOUNT_ID,
-    read at call time (not at import time) so tests/callers can reconfigure
-    it after import. The OIF INSTRUMENT field is always NT8_INSTRUMENT, the
-    NT8-qualified contract name -- never order["symbol"], which risk_guard
-    checks against the generic "MNQ" root and which NT8 itself rejects as
-    an instrument. limit_price/stop_price here are the entry's own trigger
-    (for a LIMIT or STOP entry), never the position's protective exit
-    prices -- those are bracket legs, built separately by
-    build_bracket_exit_commands."""
+    order's own entry. account defaults to the module-level NT8_ACCOUNT_ID
+    (or config.account_id when an explicit config is given and account is
+    not), read at call time (not at import time) so tests/callers can
+    reconfigure it after import. The OIF INSTRUMENT field is always
+    NT8_INSTRUMENT (or config.instrument), the NT8-qualified contract name
+    -- never order["symbol"], which risk_guard checks against the generic
+    "MNQ" root and which NT8 itself rejects as an instrument. limit_price/
+    stop_price here are the entry's own trigger (for a LIMIT or STOP
+    entry), never the position's protective exit prices -- those are
+    bracket legs, built separately by build_bracket_exit_commands.
+
+    `config` is an optional explicit identity/transport bundle (see
+    tradovate_bot/config.py and
+    odd/tasks/tradovate-architecture-scaling.md task 3): when given, its
+    fields take precedence over the module globals for this call, except
+    an explicitly passed `account` still wins over config.account_id --
+    `account` is the already-existing, more specific override. When
+    `config` is None (the default), nothing changes from before."""
     if account is None:
-        account = NT8_ACCOUNT_ID
+        account = config.account_id if config is not None else NT8_ACCOUNT_ID
+    instrument = config.instrument if config is not None else NT8_INSTRUMENT
     action = _SIDE_TO_ATI_ACTION.get(order["side"], "BUY")
     order_type = _TYPE_TO_ATI_ORDER_TYPE.get(str(order.get("type", "market")).lower(), "MARKET")
     return oif_writer.build_place_command(
         account=account,
-        instrument=NT8_INSTRUMENT,
+        instrument=instrument,
         action=action,
         qty=int(order["qty"]),
         order_type=order_type,
@@ -243,21 +265,27 @@ def build_place_command(order, account=None):
     )
 
 
-def build_bracket_exit_commands(order, stop_price, target_price, account=None):
+def build_bracket_exit_commands(order, stop_price, target_price, account=None, config=None):
     """Builds the OIF PLACE commands for an order's protective exit legs:
     a stop-loss (STOPMARKET) at stop_price and/or a take-profit (LIMIT) at
     target_price, both on the side opposite the entry, same qty,
-    instrument NT8_INSTRUMENT (see build_place_command). When both are
-    present they share one OCO group id so a fill on either leg cancels
-    the other -- NT8 enforces that linkage; this code only assigns
-    matching group ids. Returns [] when neither price is given (no
+    instrument NT8_INSTRUMENT/config.instrument (see build_place_command).
+    When both are present they share one OCO group id so a fill on either
+    leg cancels the other -- NT8 enforces that linkage; this code only
+    assigns matching group ids. Returns [] when neither price is given (no
     bracket requested).
 
     stop_price/target_price must already be absolute, tick-rounded prices
     derived from the CONFIRMED fill -- see compute_bracket_prices_from_fill.
-    This function does no price derivation of its own."""
+    This function does no price derivation of its own.
+
+    `config` behaves exactly as in build_place_command: optional, its
+    fields override the module globals for this call, an explicit
+    `account` still wins over config.account_id, and None changes nothing
+    (see odd/tasks/tradovate-architecture-scaling.md task 3)."""
     if account is None:
-        account = NT8_ACCOUNT_ID
+        account = config.account_id if config is not None else NT8_ACCOUNT_ID
+    instrument = config.instrument if config is not None else NT8_INSTRUMENT
     if stop_price is None and target_price is None:
         return []
     exit_side = _OPPOSITE_SIDE.get(order["side"])
@@ -269,12 +297,12 @@ def build_bracket_exit_commands(order, stop_price, target_price, account=None):
     commands = []
     if stop_price is not None:
         commands.append(oif_writer.build_place_command(
-            account=account, instrument=NT8_INSTRUMENT, action=exit_action,
+            account=account, instrument=instrument, action=exit_action,
             qty=qty, order_type="STOPMARKET", stop_price=stop_price, oco=oco,
         ))
     if target_price is not None:
         commands.append(oif_writer.build_place_command(
-            account=account, instrument=NT8_INSTRUMENT, action=exit_action,
+            account=account, instrument=instrument, action=exit_action,
             qty=qty, order_type="LIMIT", limit_price=target_price, oco=oco,
         ))
     return commands
@@ -311,7 +339,7 @@ class FillResult:
 _TERMINAL_OUTGOING_STATUSES = {"FILLED", "REJECTED", "CANCELLED"}
 
 
-def wait_for_entry_fill(seen_files, timeout_seconds=None, poll_interval_seconds=None):
+def wait_for_entry_fill(seen_files, timeout_seconds=None, poll_interval_seconds=None, config=None):
     """Polls NT8's outgoing folder for the entry order's own confirmation,
     logging every new record seen (same as poll_outgoing_once). Returns a
     FillResult as soon as a FILLED or REJECTED record appears, or "timeout"
@@ -327,15 +355,26 @@ def wait_for_entry_fill(seen_files, timeout_seconds=None, poll_interval_seconds=
     rewrite to FILLED -- timing out and defensively flattening a position
     that had, in fact, already filled). So a filename is only treated as
     permanently seen once it reaches a terminal status; anything else is
-    re-read on the next poll."""
+    re-read on the next poll.
+
+    `config`, when given, supplies outgoing_dir/fill_timeout_seconds/
+    fill_poll_interval_seconds instead of NT8_OUTGOING_DIR/
+    FILL_CONFIRMATION_TIMEOUT_SECONDS/FILL_CONFIRMATION_POLL_INTERVAL_SECONDS
+    -- only for whichever of timeout_seconds/poll_interval_seconds was left
+    None, same precedence as every other config-aware function here. None
+    (the default) changes nothing (see
+    odd/tasks/tradovate-architecture-scaling.md task 3)."""
     if timeout_seconds is None:
-        timeout_seconds = FILL_CONFIRMATION_TIMEOUT_SECONDS
+        timeout_seconds = config.fill_timeout_seconds if config is not None else FILL_CONFIRMATION_TIMEOUT_SECONDS
     if poll_interval_seconds is None:
-        poll_interval_seconds = FILL_CONFIRMATION_POLL_INTERVAL_SECONDS
+        poll_interval_seconds = (
+            config.fill_poll_interval_seconds if config is not None else FILL_CONFIRMATION_POLL_INTERVAL_SECONDS
+        )
+    outgoing_dir = config.outgoing_dir if config is not None else NT8_OUTGOING_DIR
     seen = set(seen_files)
     deadline = time.monotonic() + timeout_seconds
     while True:
-        records, polled_seen = oif_writer.tail_outgoing(NT8_OUTGOING_DIR, seen)
+        records, polled_seen = oif_writer.tail_outgoing(outgoing_dir, seen)
         for record in records:
             log_fill({"source": "nt8_outgoing", "record": record})
             raw_fields = record.get("raw_fields") or []
@@ -357,22 +396,29 @@ def wait_for_entry_fill(seen_files, timeout_seconds=None, poll_interval_seconds=
         time.sleep(poll_interval_seconds)
 
 
-def _snapshot_outgoing_files():
-    if not NT8_OUTGOING_DIR or not os.path.isdir(NT8_OUTGOING_DIR):
+def _snapshot_outgoing_files(config=None):
+    outgoing_dir = config.outgoing_dir if config is not None else NT8_OUTGOING_DIR
+    if not outgoing_dir or not os.path.isdir(outgoing_dir):
         return set()
-    return set(os.listdir(NT8_OUTGOING_DIR))
+    return set(os.listdir(outgoing_dir))
 
 
-def current_position():
+def current_position(config=None):
     """Reads the current NT8 market position for NT8_ACCOUNT_ID from NT8's
     own diagnostic log (see position_state.py), using NT8_LOG_DIR. Returns
     a position_state.PositionState; "unknown" (unconfigured/missing/
     unreadable log, or no matching account line) is never treated as Flat
-    by any caller here -- see process_order and run_once."""
-    return position_state.read_position_state(NT8_LOG_DIR, NT8_ACCOUNT_ID)
+    by any caller here -- see process_order and run_once.
+
+    `config`, when given, supplies log_dir/account_id instead of the
+    module globals for this call only; None (the default) changes nothing
+    (see odd/tasks/tradovate-architecture-scaling.md task 3)."""
+    log_dir = config.log_dir if config is not None else NT8_LOG_DIR
+    account_id = config.account_id if config is not None else NT8_ACCOUNT_ID
+    return position_state.read_position_state(log_dir, account_id)
 
 
-def process_order(raw_order):
+def process_order(raw_order, config=None):
     """Normalizes, risk-checks, and -- only on a pass -- places one order
     via the NT8 ATI OIF writer. Always logs the decision, pass or reject,
     with its reason.
@@ -393,33 +439,49 @@ def process_order(raw_order):
     log couldn't be read) the entry is refused -- this bot is single-
     order/single-position by design, so any non-Flat read means a new
     entry must not be placed. See
-    odd/tasks/tradovate-architecture-scaling.md task 1."""
+    odd/tasks/tradovate-architecture-scaling.md task 1.
+
+    `config` is an optional explicit identity/transport bundle, threaded
+    through to every call below that accepts one (fetch_account_state,
+    risk_guard.evaluate_order, current_position, build_place_command,
+    wait_for_entry_fill, build_bracket_exit_commands). `config=None` (the
+    default, or simply omitting it) reads every module global exactly as
+    before -- see odd/tasks/tradovate-architecture-scaling.md task 3.
+    current_position is only ever called with the config kwarg when a
+    config was actually given, so a caller that monkeypatches
+    current_position with a plain zero-argument stub (as every pre-
+    existing test here does) keeps working unchanged."""
     order = normalize_order(raw_order)
     if order is None:
         decision = risk_guard.Decision(False, "order record could not be normalized (missing/malformed fields)")
         log_decision(raw_order, decision)
         return decision
 
-    account_state_dict = fetch_account_state()
-    decision = risk_guard.evaluate_order(order, account_state_dict, time_utils.now_et())
+    account_state_dict = fetch_account_state(config=config)
+    decision = risk_guard.evaluate_order(order, account_state_dict, time_utils.now_et(), config=config)
     log_decision(order, decision, extra={"account_state": account_state_dict})
 
     if not decision.allow:
         return decision
 
-    position = current_position()
+    position = current_position(config=config) if config is not None else current_position()
+    account_id = config.account_id if config is not None else NT8_ACCOUNT_ID
     if position.side != "Flat":
         refusal = risk_guard.Decision(
             False,
             "refusing new entry: one-position-at-a-time -- current position on account %s is "
-            "%s (qty=%s), not Flat" % (NT8_ACCOUNT_ID, position.side, position.qty),
+            "%s (qty=%s), not Flat" % (account_id, position.side, position.qty),
         )
         log_decision(order, refusal, extra={"position_side": position.side, "position_qty": position.qty})
         return refusal
 
     wants_bracket = order.get("stop_loss_points") is not None or order.get("take_profit_points") is not None
 
-    if wants_bracket and not NT8_OUTGOING_DIR:
+    outgoing_dir = config.outgoing_dir if config is not None else NT8_OUTGOING_DIR
+    incoming_dir = config.incoming_dir if config is not None else NT8_INCOMING_DIR
+    instrument = config.instrument if config is not None else NT8_INSTRUMENT
+
+    if wants_bracket and not outgoing_dir:
         refusal = risk_guard.Decision(
             False,
             "bracket requested (stop_loss_points/take_profit_points) but NT8_OUTGOING_DIR is not "
@@ -429,10 +491,10 @@ def process_order(raw_order):
         log_decision(order, refusal)
         return refusal
 
-    seen_before = _snapshot_outgoing_files() if wants_bracket else None
-    entry_command = build_place_command(order)
+    seen_before = _snapshot_outgoing_files(config=config) if wants_bracket else None
+    entry_command = build_place_command(order, config=config)
     try:
-        path = oif_writer.write_command(NT8_INCOMING_DIR, entry_command)
+        path = oif_writer.write_command(incoming_dir, entry_command)
     except OSError as exc:
         log_decision(order, risk_guard.Decision(False, "order placement failed: %s" % exc))
         raise
@@ -441,15 +503,15 @@ def process_order(raw_order):
     if not wants_bracket:
         return decision
 
-    fill = wait_for_entry_fill(seen_before)
+    fill = wait_for_entry_fill(seen_before, config=config)
 
     if fill.status == "rejected":
         log_fill({"order": order, "status": "entry_rejected_by_nt8"})
         return decision
 
     if fill.status != "filled":
-        close_command = oif_writer.build_closeposition_command(account=NT8_ACCOUNT_ID, instrument=NT8_INSTRUMENT)
-        close_path = oif_writer.write_command(NT8_INCOMING_DIR, close_command)
+        close_command = oif_writer.build_closeposition_command(account=account_id, instrument=instrument)
+        close_path = oif_writer.write_command(incoming_dir, close_command)
         log_fill({
             "order": order, "command": close_command, "oif_path": close_path,
             "status": "defensive_flatten_fill_confirmation_timeout",
@@ -457,9 +519,9 @@ def process_order(raw_order):
         return decision
 
     stop_price, target_price = compute_bracket_prices_from_fill(order, fill.price)
-    for command in build_bracket_exit_commands(order, stop_price, target_price):
+    for command in build_bracket_exit_commands(order, stop_price, target_price, config=config):
         try:
-            exit_path = oif_writer.write_command(NT8_INCOMING_DIR, command)
+            exit_path = oif_writer.write_command(incoming_dir, command)
         except OSError as exc:
             log_decision(order, risk_guard.Decision(False, "bracket placement failed: %s" % exc))
             raise
@@ -467,7 +529,7 @@ def process_order(raw_order):
     return decision
 
 
-def run_once(orders_path=DEFAULT_ORDERS_PATH):
+def run_once(orders_path=DEFAULT_ORDERS_PATH, config=None):
     """Runs one poll cycle. Before processing any new orders, checks
     risk_guard.check_trading_hours: if the market is closed AND a position
     is currently open (or "unknown" -- treated the same as open, never
@@ -481,14 +543,25 @@ def run_once(orders_path=DEFAULT_ORDERS_PATH):
     and no new entries are possible anyway (risk_guard would reject them),
     so order processing is simply skipped for the cycle. Returns the list
     of decisions made for whatever orders were actually processed (empty
-    when the cycle was closed-market and skipped)."""
+    when the cycle was closed-market and skipped).
+
+    `config`, when given, is threaded through to current_position and
+    every process_order call this cycle makes; None (the default) reads
+    every module global exactly as before (see
+    odd/tasks/tradovate-architecture-scaling.md task 3). Like
+    process_order, current_position is only called with the config kwarg
+    when a config was actually given, so existing zero-argument
+    monkeypatch stubs of current_position keep working unchanged."""
     now = time_utils.now_et()
     hours_ok, _hours_reason = risk_guard.check_trading_hours(now)
     if not hours_ok:
-        position = current_position()
+        position = current_position(config=config) if config is not None else current_position()
         if position.side != "Flat":
-            close_command = oif_writer.build_closeposition_command(account=NT8_ACCOUNT_ID, instrument=NT8_INSTRUMENT)
-            close_path = oif_writer.write_command(NT8_INCOMING_DIR, close_command)
+            account_id = config.account_id if config is not None else NT8_ACCOUNT_ID
+            instrument = config.instrument if config is not None else NT8_INSTRUMENT
+            incoming_dir = config.incoming_dir if config is not None else NT8_INCOMING_DIR
+            close_command = oif_writer.build_closeposition_command(account=account_id, instrument=instrument)
+            close_path = oif_writer.write_command(incoming_dir, close_command)
             log_fill({
                 "command": close_command,
                 "oif_path": close_path,
@@ -500,25 +573,44 @@ def run_once(orders_path=DEFAULT_ORDERS_PATH):
 
     decisions = []
     for raw_order in load_orders(orders_path):
-        decisions.append(process_order(raw_order))
+        decisions.append(process_order(raw_order, config=config))
     return decisions
 
 
-def poll_outgoing_once(seen_files):
+def poll_outgoing_once(seen_files, config=None):
     """Tails NT8's outgoing folder once for new order/position/connection
     confirmation files, logging each as a fill-log record for later review.
     These files are logging-only -- see oif_writer.py's module docstring on
     why their internal fields are not trusted for risk decisions. Returns
-    the updated seen_files set."""
-    records, updated_seen = oif_writer.tail_outgoing(NT8_OUTGOING_DIR, seen_files)
+    the updated seen_files set.
+
+    `config`, when given, supplies outgoing_dir instead of the module-level
+    NT8_OUTGOING_DIR for this call only; None (the default) changes
+    nothing (see odd/tasks/tradovate-architecture-scaling.md task 3)."""
+    outgoing_dir = config.outgoing_dir if config is not None else NT8_OUTGOING_DIR
+    records, updated_seen = oif_writer.tail_outgoing(outgoing_dir, seen_files)
     for record in records:
         log_fill({"source": "nt8_outgoing", "record": record})
     return updated_seen
 
 
-def main():
+def main(config=None):
+    """Starts the always-on poll loop. `config`, when given (e.g.
+    tradovate_bot.config.BotConfig.from_env(), or a different instance's
+    config for a second account/instrument in the same process), is
+    threaded through to run_once/poll_outgoing_once and used for this
+    function's own startup misconfiguration check and status print
+    instead of the module globals. None (the default -- main() keeps
+    working exactly as before when called with no arguments) reads
+    NT8_INCOMING_DIR/NT8_ACCOUNT_ID/NT8_OUTGOING_DIR/
+    ACCOUNT_TELEMETRY_JSON_PATH exactly as before. See
+    odd/tasks/tradovate-architecture-scaling.md task 3."""
     _ensure_state_dir()
-    if not NT8_INCOMING_DIR or not NT8_ACCOUNT_ID or not ACCOUNT_TELEMETRY_JSON_PATH:
+    incoming_dir = config.incoming_dir if config is not None else NT8_INCOMING_DIR
+    account_id = config.account_id if config is not None else NT8_ACCOUNT_ID
+    outgoing_dir = config.outgoing_dir if config is not None else NT8_OUTGOING_DIR
+    telemetry_path = config.telemetry_json_path if config is not None else ACCOUNT_TELEMETRY_JSON_PATH
+    if not incoming_dir or not account_id or not telemetry_path:
         print(
             "tradovate_bot executor misconfigured: NT8_INCOMING_DIR, NT8_ACCOUNT_ID, and "
             "ACCOUNT_TELEMETRY_JSON_PATH must all be set. Refusing to start rather than run "
@@ -534,15 +626,15 @@ def main():
         sys.exit(1)
     print(
         "tradovate_bot executor running: account=%s incoming=%s outgoing=%s telemetry=%s"
-        % (NT8_ACCOUNT_ID, NT8_INCOMING_DIR, NT8_OUTGOING_DIR or "(not configured)", ACCOUNT_TELEMETRY_JSON_PATH),
+        % (account_id, incoming_dir, outgoing_dir or "(not configured)", telemetry_path),
         file=sys.stderr,
     )
     seen_outgoing_files = set()
     try:
         while True:
-            run_once()
-            if NT8_OUTGOING_DIR:
-                seen_outgoing_files = poll_outgoing_once(seen_outgoing_files)
+            run_once(config=config)
+            if outgoing_dir:
+                seen_outgoing_files = poll_outgoing_once(seen_outgoing_files, config=config)
             time.sleep(POLL_INTERVAL_SECONDS)
     except KeyboardInterrupt:
         pass

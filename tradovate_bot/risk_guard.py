@@ -136,24 +136,34 @@ def check_trading_hours(now):
     return True, "within trading hours"
 
 
-def check_position_size(symbol, qty):
-    """MNQ only, hard cap of 3 contracts. Rejects anything else outright."""
-    if not isinstance(symbol, str) or symbol.strip().upper() != ALLOWED_SYMBOL:
-        return False, "symbol must be %s (got %r)" % (ALLOWED_SYMBOL, symbol)
+def check_position_size(symbol, qty, allowed_symbol=None, max_contracts=None):
+    """MNQ only, hard cap of 3 contracts. Rejects anything else outright.
+
+    allowed_symbol/max_contracts are optional overrides (see
+    odd/tasks/tradovate-architecture-scaling.md task 3): when omitted or
+    None, this falls back to the module-level ALLOWED_SYMBOL/MAX_CONTRACTS
+    exactly as before -- purely additive, no change to the no-argument
+    call shape every existing caller/test already uses."""
+    if allowed_symbol is None:
+        allowed_symbol = ALLOWED_SYMBOL
+    if max_contracts is None:
+        max_contracts = MAX_CONTRACTS
+    if not isinstance(symbol, str) or symbol.strip().upper() != allowed_symbol:
+        return False, "symbol must be %s (got %r)" % (allowed_symbol, symbol)
     if not _is_finite_number(qty) or isinstance(qty, float) and not qty.is_integer():
         return False, "qty is missing, not a finite number, or not a whole number"
     qty_int = int(qty)
     if qty_int <= 0:
         return False, "qty must be a positive number of contracts, got %r" % qty
-    if qty_int > MAX_CONTRACTS:
-        return False, "position size over cap: %d contracts exceeds the %d MNQ contract limit" % (
-            qty_int, MAX_CONTRACTS)
+    if qty_int > max_contracts:
+        return False, "position size over cap: %d contracts exceeds the %d %s contract limit" % (
+            qty_int, max_contracts, allowed_symbol)
     return True, "position size within MNQ contract cap"
 
 
 # ---------------------------------------------------------------- top-level gate
 
-def evaluate_order(order, account_state, now):
+def evaluate_order(order, account_state, now, config=None):
     """Run every risk check for a proposed order against current account
     state. Returns a Decision(allow, reason). Fails closed: any missing,
     malformed, or ambiguous order, account_state, or now field results in
@@ -162,7 +172,17 @@ def evaluate_order(order, account_state, now):
     `now` is required (not defaulted) so a caller can never silently skip
     the trading-hours check by forgetting to pass it -- see
     check_trading_hours and this module's "no clock access of its own"
-    contract."""
+    contract.
+
+    `config` is an optional explicit identity/transport bundle (see
+    tradovate_bot/config.py and odd/tasks/tradovate-architecture-scaling.md
+    task 3): when given, its `.allowed_symbol`/`.max_contracts` (read via
+    getattr, so this module stays duck-typed and never imports config.py --
+    see check_position_size's call below) override the module-level
+    ALLOWED_SYMBOL/MAX_CONTRACTS for check_position_size, for this call
+    only. When `config` is None (the default), check_position_size is
+    called exactly as before -- no behavior change for any existing
+    caller."""
     if not isinstance(order, dict):
         return Decision(False, "order is missing or not a record")
     if not isinstance(account_state, dict):
@@ -179,7 +199,14 @@ def evaluate_order(order, account_state, now):
     if not ok:
         return Decision(False, reason)
 
-    ok, reason = check_position_size(order.get("symbol"), order.get("qty"))
+    if config is None:
+        ok, reason = check_position_size(order.get("symbol"), order.get("qty"))
+    else:
+        ok, reason = check_position_size(
+            order.get("symbol"), order.get("qty"),
+            allowed_symbol=getattr(config, "allowed_symbol", None),
+            max_contracts=getattr(config, "max_contracts", None),
+        )
     if not ok:
         return Decision(False, reason)
 

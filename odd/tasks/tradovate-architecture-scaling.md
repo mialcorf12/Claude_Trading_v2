@@ -73,7 +73,7 @@ trabajar los 3 puntos que mencionas de arquitectura para escalar",
    wiring into `executor.py`, test-first.
 2. [x] `signals.py`: pullback-vs-chase + chop/repeated-reversal detection,
    test-first.
-3. [ ] Config object replacing module-level globals in `risk_guard.py` and
+3. [x] Config object replacing module-level globals in `risk_guard.py` and
    `executor.py`, test-first, keeping back-compatible env-var loading in
    `main()`.
 
@@ -84,8 +84,8 @@ trabajar los 3 puntos que mencionas de arquitectura para escalar",
   grep for one-position-at-a-time, nor on its manual pre-close flatten
   step — both exist in code now (the prompt steps become redundant
   backups, not the only enforcement).
-- [ ] Full suite green: `python -m pytest tests/tradovate_bot/ -v`.
-- [ ] `tradovate_bot/README.md` updated to document the new modules.
+- [x] Full suite green: `python -m pytest tests/tradovate_bot/ -v`.
+- [x] `tradovate_bot/README.md` updated to document the new modules.
 
 ## Delivery
 Work-unit commits on branch `v2.1` (already the active branch) — no new
@@ -143,3 +143,43 @@ branch needed. Conventional commit messages, no AI co-author attribution
   regression. Caveat: not yet wired into the cron prompt or
   `executor.py` — that integration is a separate decision the user will
   make later; `signals.py` has no caller inside the bot yet, by design.
+- 2026-11-10: Task 3 done. Added `tradovate_bot/config.py`: a frozen
+  `BotConfig` dataclass (account_id, instrument, allowed_symbol,
+  max_contracts, incoming_dir, outgoing_dir, log_dir,
+  telemetry_json_path, telemetry_max_staleness_seconds,
+  fill_timeout_seconds, fill_poll_interval_seconds) plus
+  `BotConfig.from_env()`, which reproduces executor.py's exact current
+  env-var reads/defaults (`instrument`/`allowed_symbol`/`max_contracts`
+  aren't env-backed -- they default from `NT8_INSTRUMENT`'s literal value
+  and `risk_guard.ALLOWED_SYMBOL`/`MAX_CONTRACTS`). Gave
+  `risk_guard.check_position_size` optional `allowed_symbol=None,
+  max_contracts=None` kwargs (fall back to the module constants) and
+  `risk_guard.evaluate_order` an optional `config=None` param that reads
+  `config.allowed_symbol`/`config.max_contracts` via `getattr` (duck-typed
+  -- `risk_guard.py` never imports `config.py`, so there's no import
+  cycle even though `config.py` imports `risk_guard` for its defaults).
+  Gave every `executor.py` function that reads an identity/transport
+  global an optional `config=None` param (`build_place_command`,
+  `build_bracket_exit_commands`, `fetch_account_state`,
+  `current_position`, `wait_for_entry_fill`, `_snapshot_outgoing_files`,
+  `process_order`, `run_once`, `poll_outgoing_once`, `main`): when
+  `config` is given its fields override the corresponding module global
+  for that call only (an explicitly passed `account=` to
+  `build_place_command`/`build_bracket_exit_commands` still wins over
+  `config.account_id` -- the more specific, already-existing override);
+  when omitted/`None`, every module global is read exactly as before.
+  `current_position` is only ever called with the `config` kwarg when a
+  `config` was actually supplied (never `config=None` explicitly) because
+  every existing test monkeypatches it with a plain zero-argument stub --
+  passing a keyword arg to that stub would have broken all of them.
+  Test-first: wrote `tests/tradovate_bot/test_config.py` (3 tests) and the
+  config-related additions to `test_risk_guard.py` (6 tests) and
+  `test_executor.py` (5 tests) before any implementation; confirmed RED
+  by temporarily moving the not-yet-written `config.py` aside and running
+  the new/changed tests (`ImportError`/`TypeError: unexpected keyword
+  argument`), then restored `config.py` and implemented the rest to
+  GREEN. Full suite: `python -m pytest tests/tradovate_bot/ -v` -> 152
+  passed, 2 failed -- the same pre-existing, intentional uncommitted
+  `CONSISTENCY_PCT=2.00` override in `risk_guard.py` (not touched by this
+  task) as every prior task this session; no previously-passing test
+  needed any change, confirming the additive constraint held.

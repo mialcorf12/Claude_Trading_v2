@@ -319,3 +319,73 @@ def test_check_trading_hours_function_directly():
     assert ok is True
     ok, reason = rg.check_trading_hours(datetime(2026, 11, 9, 17, 0, tzinfo=EASTERN))
     assert ok is False
+
+
+# ---------------------------------------------------------------- optional explicit config
+# (odd/tasks/tradovate-architecture-scaling.md task 3: check_position_size's
+# allowed_symbol/max_contracts and evaluate_order's config are purely
+# additive -- every test above calls with no config/overrides at all and
+# must keep behaving exactly as it always has.)
+
+class _FakeConfig:
+    """Duck-typed stand-in for tradovate_bot.config.BotConfig -- evaluate_order
+    only reads .allowed_symbol/.max_contracts via getattr, so any object
+    with those attributes works, same as the real BotConfig."""
+
+    def __init__(self, allowed_symbol, max_contracts):
+        self.allowed_symbol = allowed_symbol
+        self.max_contracts = max_contracts
+
+
+def test_evaluate_order_with_config_allows_a_symbol_the_default_rejects():
+    # Sanity: without a config, ES is rejected by the default ALLOWED_SYMBOL.
+    decision_default = _evaluate(base_order(symbol="ES"), base_account_state())
+    assert decision_default.allow is False
+
+    config = _FakeConfig(allowed_symbol="ES", max_contracts=3)
+    decision = rg.evaluate_order(base_order(symbol="ES"), base_account_state(), WITHIN_HOURS, config=config)
+    assert decision.allow is True
+
+
+def test_evaluate_order_with_config_rejects_a_symbol_the_default_allows():
+    # Sanity: without a config, MNQ passes.
+    decision_default = _evaluate(base_order(symbol="MNQ"), base_account_state())
+    assert decision_default.allow is True
+
+    config = _FakeConfig(allowed_symbol="ES", max_contracts=3)
+    decision = rg.evaluate_order(base_order(symbol="MNQ"), base_account_state(), WITHIN_HOURS, config=config)
+    assert decision.allow is False
+    assert "es" in decision.reason.lower()
+
+
+def test_evaluate_order_with_config_enforces_a_different_max_contracts():
+    config = _FakeConfig(allowed_symbol="MNQ", max_contracts=1)
+    decision_over = rg.evaluate_order(base_order(qty=2), base_account_state(), WITHIN_HOURS, config=config)
+    assert decision_over.allow is False
+    decision_at_cap = rg.evaluate_order(base_order(qty=1), base_account_state(), WITHIN_HOURS, config=config)
+    assert decision_at_cap.allow is True
+
+
+def test_evaluate_order_with_config_none_behaves_exactly_like_omitting_it():
+    decision_omitted = rg.evaluate_order(base_order(), base_account_state(), WITHIN_HOURS)
+    decision_explicit_none = rg.evaluate_order(base_order(), base_account_state(), WITHIN_HOURS, config=None)
+    assert decision_omitted.allow is True
+    assert decision_explicit_none.allow is True
+    assert decision_omitted.reason == decision_explicit_none.reason == "all risk checks passed"
+
+
+def test_check_position_size_with_explicit_overrides():
+    ok, reason = rg.check_position_size("ES", 2, allowed_symbol="ES", max_contracts=5)
+    assert ok is True
+    ok, reason = rg.check_position_size("MNQ", 2, allowed_symbol="ES", max_contracts=5)
+    assert ok is False
+
+
+def test_check_position_size_defaults_when_overrides_are_none():
+    ok_default, reason_default = rg.check_position_size("MNQ", 3)
+    ok_explicit_none, reason_explicit_none = rg.check_position_size(
+        "MNQ", 3, allowed_symbol=None, max_contracts=None
+    )
+    assert ok_default is True
+    assert ok_explicit_none is True
+    assert reason_default == reason_explicit_none
