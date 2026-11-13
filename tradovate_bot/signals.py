@@ -76,6 +76,36 @@ Threshold choices, documented here so they don't silently drift either:
     at least one full streak's worth of bars (MIN_CHASE_STREAK + 1) or
     enough bars to see a swing with two confirmed sides, respectively,
     before its verdict means anything; below that it fails closed.
+
+Dynamic bracket sizing (select_bracket_points / average_bar_range), added
+2026-11-13 per explicit user request for "tu criterio técnico" on when to
+size the stop-loss/take-profit bracket wider vs narrower:
+  - VOLATILITY_LOOKBACK_BARS = 9, the same window CHOP_WINDOW_BARS already
+    uses -- the trailing 45 minutes of 5-minute bars.
+  - VOLATILITY_THRESHOLD_POINTS = 40.0: grounded in real 2026-11-12/13
+    session data (see odd/tasks/tradovate-execution-bot.md Progress log
+    and the SL:TP sizing analysis referenced there). The quiet overnight
+    chop period 00:00-00:16 ET 11/13 averaged roughly 20-30 points of
+    high-low range per trailing 5-minute bar, while the 09:30-11:00 ET
+    breakout earlier that same day averaged roughly 90-170 points per
+    bar -- 40 points sits with wide margin between the two observed
+    regimes, so it will not flip on ordinary noise inside either one.
+  - NARROW_BRACKET_POINTS = 16.75 (the existing default, ~$100 at
+    $6/point for 3 contracts) and WIDE_BRACKET_POINTS = 33.5 (~$200 at
+    $6/point for 3 contracts): a narrow $100 bracket gets stopped out by
+    the noise of a high-volatility regime before it can reach its
+    target -- demonstrated empirically this week, where a backtest-style
+    analysis found a wide-but-equal bracket produced a positive net
+    result in a high-volatility regime while the narrow bracket lost
+    money net in that same regime, even though the narrow bracket's win
+    RATE was often similar or higher. Win rate and profitability are not
+    the same thing, which is the whole reason this sizing is now
+    volatility-aware instead of fixed.
+  - select_bracket_points fails closed to NARROW_BRACKET_POINTS (not the
+    wider one) whenever average_bar_range can't produce a value -- the
+    smaller-dollar-risk option is the safer failure mode, consistent
+    with this module's and risk_guard's general fail-closed-toward-
+    caution posture.
 """
 import math
 from dataclasses import dataclass
@@ -89,6 +119,11 @@ MIN_BARS_FOR_CHASE_CHECK = MIN_CHASE_STREAK + 1  # 5
 CHOP_WINDOW_BARS = 9
 CHOP_SWING_THRESHOLD = 3
 MIN_BARS_FOR_CHOP_CHECK = 5
+
+VOLATILITY_LOOKBACK_BARS = 9
+NARROW_BRACKET_POINTS = 16.75   # ~$100 at $6/point (3 contracts), the existing default
+WIDE_BRACKET_POINTS = 33.5      # ~$200 at $6/point (3 contracts)
+VOLATILITY_THRESHOLD_POINTS = 40.0
 
 _OHLC_FIELDS = ("open", "high", "low", "close")
 
@@ -280,3 +315,40 @@ def evaluate_signal(bars, direction):
 
     reasons = tuple(result.reason for result in (chase, chop) if result.flagged)
     return SignalVerdict(clear=not reasons, direction=direction, reasons=reasons)
+
+
+# ---------------------------------------------------------------- bracket sizing
+
+def average_bar_range(bars, lookback=VOLATILITY_LOOKBACK_BARS):
+    """Average high-low range across the trailing `lookback` bars, in
+    points. Returns None (fail-closed: caller must not assume a
+    volatility regime when this can't be computed) for malformed bars or
+    fewer than `lookback` bars -- same fail-closed contract as
+    check_chop_guard/check_chase_guard in this module: there is no
+    "assume quiet" path when range can't actually be confirmed."""
+    if not _valid_bars(bars):
+        return None
+    if len(bars) < lookback:
+        return None
+
+    window = bars[-lookback:]
+    ranges = [b["high"] - b["low"] for b in window]
+    return sum(ranges) / len(ranges)
+
+
+def select_bracket_points(bars):
+    """Returns (stop_loss_points, take_profit_points) as an equal pair,
+    chosen by recent volatility: WIDE_BRACKET_POINTS when the trailing
+    VOLATILITY_LOOKBACK_BARS-bar average range is >=
+    VOLATILITY_THRESHOLD_POINTS, else NARROW_BRACKET_POINTS. Fails closed
+    to the narrower (smaller-risk) bracket -- not the wider one -- whenever
+    average_bar_range() can't produce a value, since defaulting to the
+    smaller-dollar-risk option is the safer failure mode, consistent with
+    this module's and risk_guard's general fail-closed-toward-caution
+    posture."""
+    avg = average_bar_range(bars)
+    if avg is None:
+        return (NARROW_BRACKET_POINTS, NARROW_BRACKET_POINTS)
+    if avg >= VOLATILITY_THRESHOLD_POINTS:
+        return (WIDE_BRACKET_POINTS, WIDE_BRACKET_POINTS)
+    return (NARROW_BRACKET_POINTS, NARROW_BRACKET_POINTS)

@@ -109,6 +109,66 @@ TOO_FEW_BARS = [
     {"open": 2.0, "high": 3.0, "low": 1.5, "close": 2.5},
 ]
 
+# Known, exact ranges 10..90 in steps of 10 across 9 bars -- mean is
+# trivially 50.0, used only to pin down average_bar_range's arithmetic.
+KNOWN_RANGE_BARS = [
+    {"open": 100.0, "high": 110.0, "low": 100.0, "close": 105.0},
+    {"open": 100.0, "high": 120.0, "low": 100.0, "close": 110.0},
+    {"open": 100.0, "high": 130.0, "low": 100.0, "close": 115.0},
+    {"open": 100.0, "high": 140.0, "low": 100.0, "close": 120.0},
+    {"open": 100.0, "high": 150.0, "low": 100.0, "close": 125.0},
+    {"open": 100.0, "high": 160.0, "low": 100.0, "close": 130.0},
+    {"open": 100.0, "high": 170.0, "low": 100.0, "close": 135.0},
+    {"open": 100.0, "high": 180.0, "low": 100.0, "close": 140.0},
+    {"open": 100.0, "high": 190.0, "low": 100.0, "close": 145.0},
+]
+KNOWN_RANGE_MEAN = 50.0
+
+# Modeled on the real 00:00-00:16 ET 11/13 quiet overnight chop (roughly
+# 20-30pt high-low range per trailing 5-minute bar) -- see
+# odd/tasks/tradovate-execution-bot.md Progress log.
+QUIET_VOLATILITY_BARS = [
+    {"open": 28000.0, "high": 28020.0, "low": 28000.0, "close": 28015.0},
+    {"open": 28015.0, "high": 28039.0, "low": 28015.0, "close": 28030.0},
+    {"open": 28030.0, "high": 28058.0, "low": 28030.0, "close": 28045.0},
+    {"open": 28045.0, "high": 28067.0, "low": 28045.0, "close": 28060.0},
+    {"open": 28060.0, "high": 28086.0, "low": 28060.0, "close": 28075.0},
+    {"open": 28075.0, "high": 28105.0, "low": 28075.0, "close": 28090.0},
+    {"open": 28090.0, "high": 28114.0, "low": 28090.0, "close": 28105.0},
+    {"open": 28105.0, "high": 28131.0, "low": 28105.0, "close": 28120.0},
+    {"open": 28120.0, "high": 28148.0, "low": 28120.0, "close": 28135.0},
+]
+
+# Modeled on the real 09:30-11:00 ET 11/13 breakout earlier the same day
+# (roughly 90-170pt high-low range per trailing 5-minute bar) -- see
+# odd/tasks/tradovate-execution-bot.md Progress log.
+VOLATILE_VOLATILITY_BARS = [
+    {"open": 28000.0, "high": 28090.0, "low": 28000.0, "close": 28070.0},
+    {"open": 28070.0, "high": 28180.0, "low": 28070.0, "close": 28160.0},
+    {"open": 28160.0, "high": 28290.0, "low": 28160.0, "close": 28270.0},
+    {"open": 28270.0, "high": 28420.0, "low": 28270.0, "close": 28400.0},
+    {"open": 28400.0, "high": 28570.0, "low": 28400.0, "close": 28550.0},
+    {"open": 28550.0, "high": 28690.0, "low": 28550.0, "close": 28670.0},
+    {"open": 28670.0, "high": 28790.0, "low": 28670.0, "close": 28770.0},
+    {"open": 28770.0, "high": 28930.0, "low": 28770.0, "close": 28910.0},
+    {"open": 28910.0, "high": 29010.0, "low": 28910.0, "close": 28990.0},
+]
+
+# Boundary fixtures: every bar has the SAME range so the 9-bar average
+# equals that exact range -- isolates the >= comparison at
+# VOLATILITY_THRESHOLD_POINTS from any averaging noise.
+BOUNDARY_AT_40_BARS = [
+    {"open": 100.0, "high": 140.0, "low": 100.0, "close": 120.0},
+] * 9
+
+BOUNDARY_BELOW_40_BARS = [
+    {"open": 100.0, "high": 139.0, "low": 100.0, "close": 120.0},
+] * 9
+
+BOUNDARY_ABOVE_40_BARS = [
+    {"open": 100.0, "high": 141.0, "low": 100.0, "close": 120.0},
+] * 9
+
 
 # ---------------------------------------------------------------- check_chase_guard
 
@@ -205,3 +265,47 @@ def test_evaluate_signal_rejects_invalid_direction_fail_closed():
     verdict = signals.evaluate_signal(CYCLE_18_CHASE_BARS, "up")
     assert verdict.clear is False
     assert verdict.reasons
+
+
+# ---------------------------------------------------------------- average_bar_range
+
+def test_average_bar_range_computes_exact_mean_of_known_ranges():
+    result = signals.average_bar_range(KNOWN_RANGE_BARS)
+    assert result == pytest.approx(KNOWN_RANGE_MEAN)
+
+
+def test_average_bar_range_malformed_bars_returns_none():
+    assert signals.average_bar_range(None) is None
+    assert signals.average_bar_range([]) is None
+    assert signals.average_bar_range([{"high": 1.0}] * 10) is None
+
+
+def test_average_bar_range_fewer_than_lookback_returns_none():
+    assert signals.average_bar_range(TOO_FEW_BARS) is None
+
+
+# ---------------------------------------------------------------- select_bracket_points
+
+def test_select_bracket_points_quiet_regime_returns_narrow_bracket():
+    assert signals.select_bracket_points(QUIET_VOLATILITY_BARS) == (16.75, 16.75)
+
+
+def test_select_bracket_points_volatile_regime_returns_wide_bracket():
+    assert signals.select_bracket_points(VOLATILE_VOLATILITY_BARS) == (33.5, 33.5)
+
+
+def test_select_bracket_points_malformed_bars_fail_closed_to_narrow():
+    assert signals.select_bracket_points(None) == (16.75, 16.75)
+    assert signals.select_bracket_points(TOO_FEW_BARS) == (16.75, 16.75)
+
+
+def test_select_bracket_points_boundary_at_threshold_is_wide():
+    assert signals.select_bracket_points(BOUNDARY_AT_40_BARS) == (33.5, 33.5)
+
+
+def test_select_bracket_points_boundary_just_below_threshold_is_narrow():
+    assert signals.select_bracket_points(BOUNDARY_BELOW_40_BARS) == (16.75, 16.75)
+
+
+def test_select_bracket_points_boundary_just_above_threshold_is_wide():
+    assert signals.select_bracket_points(BOUNDARY_ABOVE_40_BARS) == (33.5, 33.5)
