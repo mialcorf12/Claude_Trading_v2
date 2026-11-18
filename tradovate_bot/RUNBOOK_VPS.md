@@ -97,7 +97,7 @@ Ejecutar en PowerShell:
 
 ```powershell
 copy ninjatrader_addon\AccountTelemetryAddOn.cs "C:\Users\Administrator\Documents\NinjaTrader 8\bin\Custom\AddOns\"
-copy ninjatrader_addon\LocalBarExporter.cs "$env:USERPROFILE\Documents\NinjaTrader 8\bin\Custom\AddOns\"
+copy ninjatrader_addon\LocalBarExporter.cs "$env:USERPROFILE\Documents\NinjaTrader 8\bin\Custom\Indicators\"
 
 ```
 
