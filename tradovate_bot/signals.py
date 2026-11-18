@@ -186,14 +186,26 @@ def _valid_bars(bars):
 def check_chase_guard(bars, direction):
     """Pullback-over-chase guard (rule 1, see module docstring).
 
-    Looks at the trailing CHASE_LOOKBACK_BARS closes. If any bar-over-bar
-    move against `direction` exists anywhere in that window, a real
-    retracement has already happened -- not chasing, regardless of how
-    long the subsequent run is (this is what lets cycle 23's pullback-
-    then-continuation through). If NO such retracement exists anywhere in
-    the window AND there are at least MIN_CHASE_STREAK bar-over-bar moves
-    in favor of `direction`, price has done nothing but set new extremes
-    with zero pullback -- this is a chase (cycle 18's exact scenario).
+    Looks at the trailing CHASE_LOOKBACK_BARS closes and measures the
+    CURRENT unbroken run of bar-over-bar moves in favor of `direction`,
+    counted backwards from the most recent bar. If that trailing run is
+    at least MIN_CHASE_STREAK steps long, price has set that many new
+    extremes in a row with zero retracement SINCE the run started -- a
+    chase (cycle 18's exact scenario), regardless of whether an earlier,
+    now-stale retracement sits further back in the window. If the
+    trailing run is shorter than MIN_CHASE_STREAK, it is not extended
+    enough to call it chasing, whether or not an earlier retracement
+    exists -- this is what lets cycle 23's pullback-then-continuation
+    through (the pullback is the most recent break in the run, so the
+    run restarts clean afterward and is short at read time).
+
+    Fixed 2026-11-16: the original version treated ANY retracement
+    anywhere in the lookback as clearing the guard permanently, even for
+    a run that kept extending with zero pullback long after that
+    retracement -- confirmed live (~14:37 ET) when a 4-bar straight
+    decline cleared as "not chasing" solely because of an unrelated
+    uptick several bars earlier. Recency, not mere presence, is what the
+    rule was always meant to require.
 
     Fails closed (flagged=True) for an unrecognized direction, malformed
     bars, or fewer than MIN_BARS_FOR_CHASE_CHECK bars -- there is no
@@ -212,36 +224,42 @@ def check_chase_guard(bars, direction):
     window = bars[-CHASE_LOOKBACK_BARS:]
     closes = [b["close"] for b in window]
 
-    favor_steps = 0
-    pullback_found = False
+    steps = []
     for prev, curr in zip(closes, closes[1:]):
         if direction == "buy":
             moved_favor, moved_against = curr > prev, curr < prev
         else:  # "sell"
             moved_favor, moved_against = curr < prev, curr > prev
-        if moved_favor:
-            favor_steps += 1
-        elif moved_against:
-            pullback_found = True
+        steps.append(True if moved_favor else False if moved_against else None)
 
+    run = 0
+    for step in reversed(steps):
+        if step is True:
+            run += 1
+        else:
+            break
+
+    if run >= MIN_CHASE_STREAK:
+        return GuardResult(
+            True,
+            "%d consecutive new extremes with zero retracement since the run started -- chasing an "
+            "extended %s move (see cycle 18 root cause, odd/tasks/tradovate-execution-bot.md)"
+            % (run, direction),
+        )
+
+    pullback_found = any(step is False for step in steps)
     if pullback_found:
         return GuardResult(
             False,
-            "a retracement against the %s move was found in the trailing %d-bar window -- not chasing"
-            % (direction, len(window)),
-        )
-
-    if favor_steps >= MIN_CHASE_STREAK:
-        return GuardResult(
-            True,
-            "%d consecutive new extremes with zero retracement -- chasing an extended %s move "
-            "(see cycle 18 root cause, odd/tasks/tradovate-execution-bot.md)" % (favor_steps, direction),
+            "a retracement against the %s move was found in the trailing %d-bar window, and the "
+            "current run (%d step(s)) is short of the %d-step chase threshold -- not chasing"
+            % (direction, len(window), run, MIN_CHASE_STREAK),
         )
 
     return GuardResult(
         False,
         "no pullback yet, but only %d/%d consecutive %s steps -- not extended enough to call it chasing"
-        % (favor_steps, MIN_CHASE_STREAK, direction),
+        % (run, MIN_CHASE_STREAK, direction),
     )
 
 

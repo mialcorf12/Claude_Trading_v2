@@ -10,7 +10,7 @@
 6. Que recree el job con CronCreate (mismo prompt/cadencia: 7,22,37,52 * * * *).
 
 +++++++++++++++++
-lee la sección "Cron procedure" de odd/tasks/tradovate-execution-bot.md. verifica la posición actual contra el log real de NT8 antes de recrear el cron. recrea el job con CronCreate (mismo prompt/cadencia: 7,22,37,52 * * * *).
+lee la sección "Cron procedure" de odd/tasks/tradovate-execution-bot.md. verifica la posición actual contra el log real de NT8 antes de recrear el cron. recrea el job con CronCreate (mismo prompt/cadencia: 3,13,23,33,43,53 * * * *).
 +++++++++++++++++
 
 Eso es todo lo que se pierde al reiniciar: el cron y el contexto de esta conversación puntual — nada del historial de trading, commits, ni el log de ciclos (cycles.log.jsonl), que sí persisten en disco.

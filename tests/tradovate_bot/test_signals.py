@@ -103,6 +103,23 @@ NEITHER_FIRES_BARS = [
     {"open": 112.0, "high": 130.0, "low": 114.0, "close": 115.0},
 ]
 
+# A stale, early retracement (94 -> 97) followed by 4 consecutive LOWER
+# closes with zero retracement SINCE the run started (97 -> 93 -> 89 -> 85
+# -> 81). Modeled on the real 2026-11-16 ~14:37 ET cycle: the chase guard's
+# old "any retracement anywhere in the lookback" check let this through as
+# clear, even though the live run at the end is exactly cycle 18's
+# zero-pullback chase -- the retracement just happened to predate it. The
+# chase guard must flag this on the SELL side.
+STALE_PULLBACK_THEN_CHASE_BARS = [
+    {"open": 103.0, "high": 104.0, "low": 99.0, "close": 100.0},
+    {"open": 100.0, "high": 101.0, "low": 93.0, "close": 94.0},
+    {"open": 94.0, "high": 98.0, "low": 93.0, "close": 97.0},
+    {"open": 97.0, "high": 98.0, "low": 92.0, "close": 93.0},
+    {"open": 93.0, "high": 94.0, "low": 88.0, "close": 89.0},
+    {"open": 89.0, "high": 90.0, "low": 84.0, "close": 85.0},
+    {"open": 85.0, "high": 86.0, "low": 80.0, "close": 81.0},
+]
+
 TOO_FEW_BARS = [
     {"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5},
     {"open": 1.5, "high": 2.5, "low": 1.0, "close": 2.0},
@@ -187,6 +204,12 @@ def test_chase_guard_flags_pure_chase_sell_side_symmetrically():
 def test_chase_guard_allows_confirmed_pullback_then_continuation():
     result = signals.check_chase_guard(PULLBACK_CONTINUATION_BARS, "buy")
     assert result.flagged is False
+
+
+def test_chase_guard_flags_chase_when_pullback_predates_the_current_run():
+    result = signals.check_chase_guard(STALE_PULLBACK_THEN_CHASE_BARS, "sell")
+    assert result.flagged is True
+    assert "chasing" in result.reason.lower()
 
 
 def test_chase_guard_rejects_invalid_direction_fail_closed():
