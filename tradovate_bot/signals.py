@@ -35,7 +35,8 @@ order's decision flow runs evaluate_signal before placing an order.
 
 Bar shape: each bar is a plain dict with at least `open`, `high`, `low`,
 `close` (finite floats) and an optional `timestamp`. This matches the OHLC
-bars `mcp-tv-get-ohlcv` returns (5-minute intervals, most recent last) but
+bars `get_local_candles` (local-market-data MCP) returns (5-minute
+intervals, most recent last, `time` in ET) but
 these functions never touch the network -- they take whatever list of
 bars the caller already fetched.
 

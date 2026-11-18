@@ -8,6 +8,11 @@ demo/live switching, and how to run it. No LLM call exists in its
 execution path; it sits below Claude's `day-trader-skill` pack, which
 remains the signal/discretionary-approval layer.
 
+Market data comes from NinjaTrader 8 via a local MCP
+(`tradovate_bot/localMarketDataMCP.py`, `.mcp.json`,
+`ninjatrader_addon/LocalBarExporter.cs`, `candles/`); see "Local market
+data" in `tradovate_bot/README.md`.
+
 Run tests:
 
 ```sh

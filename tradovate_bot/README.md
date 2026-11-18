@@ -85,6 +85,34 @@ returns `{}`, which makes risk_guard reject) if `updated_at` is older than
 `ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS` -- i.e. if the AddOn/NT8 has
 stopped updating it, we refuse to trade rather than act on stale data.
 
+## Local market data (NT8 -> MCP)
+
+Market bars for the cron's signal read come ONLY from the local NT8 feed;
+TradingView and Yahoo are no longer used.
+
+- `ninjatrader_addon/LocalBarExporter.cs` -- NT8 indicator. Writes the last
+  200 closed bars of the 1m and 5m series to `candles/<SYMBOL>_<tf>.json`
+  (e.g. `MNQ_1m.json`, `MNQ_5m.json`; `NQ_*` when working on NQ). Setup:
+  copy to `Documents\NinjaTrader 8\bin\Custom\Indicators`, compile in the
+  NinjaScript Editor (F5), then add it to the **1-minute** chart of MNQ (or
+  NQ) and keep that chart open. Files are UTF-8 **with BOM**.
+- `candles/` -- output folder for those JSON files (runtime data).
+- `tradovate_bot/localMarketDataMCP.py` -- MCP server exposing
+  `get_local_candles(symbol="MNQ", timeframe="5m", limit=10)`. Falls back
+  between MNQ and NQ if only one file exists.
+- `.mcp.json` (repo root) -- registers it as `local-market-data`, scoped to
+  this project. After editing the server, run `/mcp` to reconnect.
+
+Timezone: bar `time` is bar-close time in the VPS local zone, which is ET.
+Everything stays in ET; no conversion is done.
+
+Freshness is checked by the MCP, not the caller: the response carries
+`freshness` = `{now_et, last_bar_time_et, last_bar_age_seconds,
+file_age_seconds, stale}`. `stale` is true when the newest bar or the file
+is older than the timeframe + 60 s, or when timestamps cannot be parsed
+(fail-closed). It is also true while the market is closed or NT8/the chart
+is not running -- in all cases do not trade on that data.
+
 ## Required environment variables (current, ATI path)
 
 | Variable | Purpose |

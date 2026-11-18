@@ -151,11 +151,13 @@ decide; no guard, threshold, or decision rule changes)**:
    backup, not the only enforcement -- keep doing it anyway, since it
    lets the LLM skip the cycle early with a clear status line instead of
    relying on the code path's refusal to notice.
-2. If flat and within trading hours: fetch fresh MNQ bars from TradingView
-   (`mcp-tv-get-ohlcv` / `mcp-tv-get-symbol-data`, symbol `CME_MINI:MNQ1!`,
-   5-minute bars) -- not Yahoo (confirmed stale by ~11-15 min on
-   2026-11-10, see Progress). Confirm `update_mode: "streaming"` and that
-   the latest bar's timestamp is recent before trusting the data.
+2. If flat and within trading hours: fetch the last 10 5-minute MNQ bars
+   with the `local-market-data` MCP tool `get_local_candles` (NT8
+   `LocalBarExporter` feed, times in ET; see `tradovate_bot/README.md`,
+   "Local market data"). **Replaces TradingView (2026-11-18)**, which had
+   replaced Yahoo (stale by ~11-15 min on 2026-11-10, see Progress).
+   Skip the cycle if the response has `freshness.stale == true` or an
+   `error`; the MCP does the freshness check, not the cron prompt.
 3. Judge BUY/SELL from genuine structure in the bars: prefer an entry on a
    confirmed pullback over chasing an already-extended move with zero
    retracement (cycle 18's loss), and read a zone that has already
