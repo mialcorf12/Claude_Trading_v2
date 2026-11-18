@@ -1,6 +1,7 @@
 .atl
 .claude
 .pytest_cache/
+candles
 __pycache__/
 *.py[cod]
 *.egg-info/
