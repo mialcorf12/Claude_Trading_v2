@@ -26,6 +26,13 @@ import uuid
 from dataclasses import dataclass
 
 from tradovate_bot import account_state, oif_writer, position_state, price_drift, risk_guard, signals, time_utils
+from tradovate_bot import config as config_module
+
+# Single source of the env-backed configuration: BotConfig.from_env() reads every
+# env var and default (and owns the MNQ contract name). The module-level names
+# below are its values, kept because the functions here (and the tests) read and
+# patch them. Do not add another os.environ.get for these.
+_ENV_CONFIG = config_module.BotConfig.from_env()
 
 STATE_DIR = os.path.join(os.path.dirname(__file__), "state")
 DECISIONS_LOG = os.path.join(STATE_DIR, "decisions.log.jsonl")
@@ -40,23 +47,21 @@ POLL_INTERVAL_SECONDS = float(os.environ.get("TRADOVATE_POLL_INTERVAL_SECONDS", 
 # the NT8 account *name* string (e.g. "Sim101" or the live Tradovate-backed
 # account name as NT8 displays it) -- not a Tradovate numeric account id,
 # since ATI never talks to Tradovate's API directly.
-NT8_INCOMING_DIR = os.environ.get("NT8_INCOMING_DIR", "")
-NT8_OUTGOING_DIR = os.environ.get("NT8_OUTGOING_DIR", "")
-NT8_ACCOUNT_ID = os.environ.get("NT8_ACCOUNT_ID", "")
+NT8_INCOMING_DIR = _ENV_CONFIG.incoming_dir
+NT8_OUTGOING_DIR = _ENV_CONFIG.outgoing_dir
+NT8_ACCOUNT_ID = _ENV_CONFIG.account_id
 
 # Directory holding NT8's own windowed diagnostic log (*.en.txt), NOT the
 # ATI incoming/outgoing folders above -- see position_state.py. Used to
 # read the account's current market position for the one-position-at-a-
 # time and auto-flatten-on-close safeguards (see
 # odd/tasks/archive/tradovate-architecture-scaling.md task 1).
-NT8_LOG_DIR = os.environ.get("NT8_LOG_DIR", "")
+NT8_LOG_DIR = _ENV_CONFIG.log_dir
 
 # Path to the JSON telemetry file written by the read-only NinjaScript
 # AddOn. See account_state.py for the required field contract.
-ACCOUNT_TELEMETRY_JSON_PATH = os.environ.get("ACCOUNT_TELEMETRY_JSON_PATH", "")
-ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS = float(
-    os.environ.get("ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS", "30")
-)
+ACCOUNT_TELEMETRY_JSON_PATH = _ENV_CONFIG.telemetry_json_path
+ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS = _ENV_CONFIG.telemetry_max_staleness_seconds
 
 # How long to wait for NT8's own fill confirmation before giving up (see
 # wait_for_entry_fill). A bracket is only ever sized from this CONFIRMED
@@ -64,8 +69,8 @@ ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS = float(
 # odd/tasks/tradovate-execution-bot.md, 2026-11-10: a bracket sized off a
 # pre-submission quote repeatedly landed on the wrong side of a fast-moving
 # market, causing premature exits and, once, a fully rejected/naked bracket.
-FILL_CONFIRMATION_TIMEOUT_SECONDS = float(os.environ.get("TRADOVATE_FILL_TIMEOUT_SECONDS", "5"))
-FILL_CONFIRMATION_POLL_INTERVAL_SECONDS = float(os.environ.get("TRADOVATE_FILL_POLL_INTERVAL_SECONDS", "0.5"))
+FILL_CONFIRMATION_TIMEOUT_SECONDS = _ENV_CONFIG.fill_timeout_seconds
+FILL_CONFIRMATION_POLL_INTERVAL_SECONDS = _ENV_CONFIG.fill_poll_interval_seconds
 
 
 def _ensure_state_dir():
@@ -260,11 +265,11 @@ _TYPE_TO_ATI_ORDER_TYPE = {"market": "MARKET", "limit": "LIMIT", "stop": "STOPMA
 # own ALLOWED_SYMBOL stays the generic "MNQ" root (that's what "MNQ only,
 # cap of 3 contracts" means for risk purposes) -- this is a separate
 # constant, read only when building the OIF command actually sent to NT8.
-# MNQ rolls quarterly (Mar/Jun/Sep/Dec); update this by hand each roll to
-# match NT8's own display name for the new front-month contract (check
-# NT8's instrument list or chart title -- confirmed format so far:
-# "<ROOT> <MM-YY>", e.g. "MNQ 12-26" for the December 2026 contract).
-NT8_INSTRUMENT = "MNQ 12-26"
+# MNQ rolls quarterly (Mar/Jun/Sep/Dec): edit config.DEFAULT_INSTRUMENT (the
+# one place) each roll to match NT8's own display name for the new front-month
+# contract (check NT8's instrument list or chart title -- confirmed format so
+# far: "<ROOT> <MM-YY>", e.g. "MNQ 12-26" for the December 2026 contract).
+NT8_INSTRUMENT = _ENV_CONFIG.instrument
 
 
 def build_place_command(order, account=None, config=None):

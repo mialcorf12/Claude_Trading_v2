@@ -78,3 +78,46 @@ def test_bot_config_is_frozen():
     cfg = config_module.BotConfig.from_env()
     with pytest.raises(dataclasses.FrozenInstanceError):
         cfg.account_id = "changed"
+
+
+# ---------------------------------------------------------------- single source of defaults
+# (odd/tasks/config-single-source.md) config.BotConfig.from_env() is the ONE place
+# that reads the env vars and owns the defaults and the MNQ contract name; the
+# executor's module-level names are its values.
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+EXECUTOR_SOURCE = (REPO_ROOT / "tradovate_bot" / "executor.py").read_text(encoding="utf-8")
+
+
+def test_the_mnq_contract_name_is_defined_once_in_config():
+    from tradovate_bot import executor
+    assert config_module.DEFAULT_INSTRUMENT == "MNQ 12-26"
+    assert config_module.BotConfig.from_env().instrument == config_module.DEFAULT_INSTRUMENT
+    assert executor.NT8_INSTRUMENT == config_module.DEFAULT_INSTRUMENT
+    assert not re.search(r'^NT8_INSTRUMENT\s*=\s*"', EXECUTOR_SOURCE, re.MULTILINE)
+
+
+def test_executor_does_not_keep_a_second_copy_of_the_env_defaults():
+    for needle in ('os.environ.get("NT8_', 'os.environ.get("ACCOUNT_TELEMETRY', 'os.environ.get("TRADOVATE_FILL'):
+        assert needle not in EXECUTOR_SOURCE, "executor.py reads %s itself instead of using BotConfig.from_env()" % needle
+
+
+def test_executor_module_globals_follow_the_env_through_botconfig():
+    env = dict(os.environ,
+               NT8_ACCOUNT_ID="ACC1", NT8_INCOMING_DIR="in_dir", NT8_OUTGOING_DIR="out_dir", NT8_LOG_DIR="log_dir",
+               ACCOUNT_TELEMETRY_JSON_PATH="tele.json", ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS="12",
+               TRADOVATE_FILL_TIMEOUT_SECONDS="7", TRADOVATE_FILL_POLL_INTERVAL_SECONDS="0.25")
+    code = ("import json, tradovate_bot.executor as e; print(json.dumps([e.NT8_ACCOUNT_ID, e.NT8_INCOMING_DIR, "
+            "e.NT8_OUTGOING_DIR, e.NT8_LOG_DIR, e.ACCOUNT_TELEMETRY_JSON_PATH, "
+            "e.ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS, e.FILL_CONFIRMATION_TIMEOUT_SECONDS, "
+            "e.FILL_CONFIRMATION_POLL_INTERVAL_SECONDS, e.NT8_INSTRUMENT]))")
+    out = subprocess.run([sys.executable, "-c", code], cwd=str(REPO_ROOT), env=env,
+                         capture_output=True, text=True, check=True).stdout
+    assert json.loads(out) == ["ACC1", "in_dir", "out_dir", "log_dir", "tele.json", 12.0, 7.0, 0.25, "MNQ 12-26"]
