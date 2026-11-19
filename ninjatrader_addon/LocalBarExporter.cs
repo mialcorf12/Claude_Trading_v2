@@ -90,11 +90,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 sb.AppendLine("  ]");
                 sb.AppendLine("}");
 
-                // Escritura atómica
+                // Escritura atómica: el archivo final nunca queda ausente.
+                // File.Replace intercambia temp -> final en una sola operación (NTFS),
+                // así un lector (el MCP) nunca ve un hueco entre borrar y mover.
                 File.WriteAllText(tempPath, sb.ToString(), Encoding.UTF8);
                 if (File.Exists(finalPath))
-                    File.Delete(finalPath);
-                File.Move(tempPath, finalPath);
+                    File.Replace(tempPath, finalPath, null);
+                else
+                    File.Move(tempPath, finalPath);
             }
             catch (Exception ex)
             {
