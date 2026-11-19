@@ -493,6 +493,13 @@ def process_order(raw_order, config=None):
     without this a move between decision and fill silently shifts the whole
     bracket. See odd/tasks/price-drift-gate.md.
 
+    After a bracketed entry fills, the fill price is compared with the
+    decision price (price_drift.evaluate_fill_slippage). If the slippage
+    exceeds the drift limit the position is flattened at once and NO bracket
+    is placed (the trade taken is not the trade that was analysed); within the
+    limit the bracket is anchored to the fill exactly as before. Orders
+    without a bracket never wait for a fill, so they are not checked.
+
     After risk_guard, the signals guard and the drift gate all pass but
     before placing the entry, this also enforces one-position-at-a-time: if
     current_position() reports anything other than Flat (an open
@@ -600,6 +607,24 @@ def process_order(raw_order, config=None):
             "status": "defensive_flatten_fill_confirmation_timeout",
         })
         return decision
+
+    slippage = price_drift.evaluate_fill_slippage(order, fill.price)
+    if not slippage.ok:
+        close_command = oif_writer.build_closeposition_command(account=account_id, instrument=instrument)
+        close_path = oif_writer.write_command(incoming_dir, close_command)
+        log_fill({
+            "order": order, "command": close_command, "oif_path": close_path,
+            "status": "defensive_flatten_fill_slippage", "fill_price": fill.price,
+        })
+        refusal = risk_guard.Decision(False, "entry filled but flattened: %s" % "; ".join(slippage.reasons))
+        log_decision(order, refusal, extra={
+            "stage": "fill_slippage",
+            "fill_price": fill.price,
+            "decision_price": slippage.decision_price,
+            "slippage": slippage.drift,
+            "slippage_limit": slippage.threshold,
+        })
+        return refusal
 
     stop_price, target_price = compute_bracket_prices_from_fill(order, fill.price)
     for command in build_bracket_exit_commands(order, stop_price, target_price, config=config):

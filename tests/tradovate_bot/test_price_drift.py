@@ -126,3 +126,40 @@ def test_default_path_uses_symbol_specific_candles_file(tmp_path, monkeypatch):
     monkeypatch.setattr(price_drift, "DEFAULT_CANDLES_DIR", tmp_path)
     verdict = price_drift.evaluate_entry_drift(_order(symbol="NQ"), now=NOW)
     assert verdict.ok is True
+
+
+# ---------------------------------------------------------------- fill slippage
+# (odd/tasks/fill-slippage-and-chase-size.md #2) after the fill, compare the
+# CONFIRMED fill price with the decision price; the bracket is anchored to the fill.
+
+def test_fill_slippage_rejects_the_2026_11_18_fill():
+    # decided at 27459.5, filled at 27425.25: 34.25 pts, limit 0.25 x 33.5 = 8.375
+    verdict = price_drift.evaluate_fill_slippage(_order(), 27425.25)
+    assert verdict.ok is False
+    assert verdict.drift == pytest.approx(34.25)
+    assert verdict.threshold == pytest.approx(0.25 * 33.5)
+    assert any("slip" in reason for reason in verdict.reasons)
+
+
+def test_fill_slippage_allows_a_fill_within_the_limit():
+    verdict = price_drift.evaluate_fill_slippage(_order(), 27457.0)
+    assert verdict.ok is True
+    assert verdict.drift == pytest.approx(2.5)
+
+
+def test_fill_slippage_is_checked_in_both_directions():
+    assert price_drift.evaluate_fill_slippage(_order(), 27475.0).ok is False
+
+
+def test_fill_slippage_uses_the_default_points_when_there_is_no_stop():
+    assert price_drift.evaluate_fill_slippage(_order(stop=None), 27452.0).ok is True    # 7.5
+    assert price_drift.evaluate_fill_slippage(_order(stop=None), 27450.0).ok is False   # 9.5
+
+
+def test_fill_slippage_fails_closed_without_a_usable_decision_price_or_fill():
+    order = _order()
+    order["bars"] = []
+    assert price_drift.evaluate_fill_slippage(order, 27459.0).ok is False
+    assert price_drift.evaluate_fill_slippage(_order(), None).ok is False
+    assert price_drift.evaluate_fill_slippage(_order(), float("nan")).ok is False
+    assert price_drift.evaluate_fill_slippage(_order(), "abc").ok is False

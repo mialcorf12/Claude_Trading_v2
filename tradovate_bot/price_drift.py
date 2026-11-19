@@ -129,3 +129,32 @@ def evaluate_entry_drift(order, candles_path=None, now=None):
             decision_price=decision_price, live_price=live_price, drift=drift, threshold=threshold,
         )
     return DriftVerdict(True, (), decision_price, live_price, drift, threshold)
+
+
+def evaluate_fill_slippage(order, fill_price):
+    """Post-fill counterpart of evaluate_entry_drift (odd/tasks/fill-slippage-and-chase-size.md).
+
+    The bracket is anchored to the CONFIRMED fill, so any slippage between the
+    decision price (bars[-1].close) and the fill silently moves the whole
+    bracket away from the one that was analysed (2026-11-18: decided 27459.5,
+    filled 27425.25). Returns a DriftVerdict: `ok=False` when
+    |fill - decision| exceeds the same limit as the pre-submission gate
+    (0.25 x stop, or the default points without a stop). `live_price` carries
+    the fill and `drift` the slippage. Fails closed on an unusable decision
+    price or fill price."""
+    decision_price = _decision_price(order)
+    threshold = _threshold(order)
+    if decision_price is None:
+        return _refuse("fill-slippage gate: order has no usable decision price (bars[-1].close)", threshold=threshold)
+    fill = _finite(fill_price)
+    if fill is None:
+        return _refuse("fill-slippage gate: the fill price is not a finite number",
+                       decision_price=decision_price, threshold=threshold)
+    slip = abs(fill - decision_price)
+    if slip > threshold:
+        return _refuse(
+            "fill-slippage gate: filled at %.2f, %.2f pts from the decision price %.2f (limit %.2f pts); "
+            "the trade taken is not the trade analysed" % (fill, slip, decision_price, threshold),
+            decision_price=decision_price, live_price=fill, drift=slip, threshold=threshold,
+        )
+    return DriftVerdict(True, (), decision_price, fill, slip, threshold)

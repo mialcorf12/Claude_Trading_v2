@@ -66,6 +66,16 @@ CHASE_FLAGGED_BARS = [
 ]
 
 
+# The real fill-slippage check, captured before the autouse fixture stubs it.
+_REAL_FILL_SLIPPAGE = price_drift.evaluate_fill_slippage
+
+
+def _shift(bars, delta):
+    """Translate a bar list by `delta` points (the guards only use differences,
+    so a shifted fixture keeps its verdicts) to give it a realistic price level."""
+    return [{k: v + delta for k, v in bar.items()} for bar in bars]
+
+
 @pytest.fixture(autouse=True)
 def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(executor, "STATE_DIR", str(tmp_path))
@@ -86,6 +96,11 @@ def isolated_state(tmp_path, monkeypatch):
     # override this explicitly (see "price-drift gate wiring" below).
     monkeypatch.setattr(
         price_drift, "evaluate_entry_drift", lambda order, **kwargs: price_drift.DriftVerdict(True, ())
+    )
+    # Same for the post-fill slippage check: the pre-existing fill tests use
+    # CLEAN_SIGNAL_BARS (closes around 115) with fills near 27800.
+    monkeypatch.setattr(
+        price_drift, "evaluate_fill_slippage", lambda order, fill_price: price_drift.DriftVerdict(True, ())
     )
     yield tmp_path
 
@@ -671,6 +686,72 @@ def test_process_order_waits_for_fill_then_places_bracket_from_real_fill_price(i
     assert stop_fields[7] == "27833.25"  # fill (27800) + 33.25, above fill for a short
     assert target_fields[0:6] == ["PLACE", "SIM101", "MNQ 12-26", "BUY", "3", "LIMIT"]
     assert target_fields[6] == "27783.25"  # fill (27800) - 16.75, below fill for a short
+
+
+# ---------------------------------------------------------------- fill-slippage wiring
+# (odd/tasks/fill-slippage-and-chase-size.md #2)
+
+def _slippage_order(**overrides):
+    order = {
+        "symbol": "MNQ", "side": "buy", "qty": 3, "type": "market",
+        "stop_loss_points": 33.5, "take_profit_points": 33.5,
+        "bars": _shift(CLEAN_SIGNAL_BARS, 27344.5),  # last close 27459.5, the 2026-11-18 decision price
+    }
+    order.update(overrides)
+    return order
+
+
+def test_process_order_flattens_and_skips_the_bracket_when_the_fill_slips_past_the_limit(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    monkeypatch.setattr(price_drift, "evaluate_fill_slippage", _REAL_FILL_SLIPPAGE)
+    monkeypatch.setattr(
+        executor, "wait_for_entry_fill", lambda seen_files, **kw: executor.FillResult("filled", 27425.25)
+    )
+
+    decision = executor.process_order(_slippage_order())
+
+    assert decision.allow is False
+    assert "slip" in decision.reason.lower()
+    assert write_command.call_count == 2  # entry, then CLOSEPOSITION -- no stop, no target
+    sent_commands = [call.args[1] for call in write_command.call_args_list]
+    assert sent_commands[1].split(";")[0:3] == ["CLOSEPOSITION", "SIM101", "MNQ 12-26"]
+    fills = _read_jsonl(executor.FILLS_LOG)
+    assert any(f.get("status") == "defensive_flatten_fill_slippage" for f in fills)
+    last = _read_jsonl(executor.DECISIONS_LOG)[-1]
+    assert last["stage"] == "fill_slippage" and last["allow"] is False
+    assert last["fill_price"] == 27425.25
+
+
+def test_process_order_keeps_the_fill_anchored_bracket_when_slippage_is_within_the_limit(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock(return_value=str(isolated_state / "incoming" / "oif_fake.txt"))
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    monkeypatch.setattr(price_drift, "evaluate_fill_slippage", _REAL_FILL_SLIPPAGE)
+    monkeypatch.setattr(
+        executor, "wait_for_entry_fill", lambda seen_files, **kw: executor.FillResult("filled", 27457.0)
+    )
+
+    decision = executor.process_order(_slippage_order())
+
+    assert decision.allow is True
+    assert write_command.call_count == 3  # entry + stop + target, exactly as before
+    sent_commands = [call.args[1] for call in write_command.call_args_list]
+    assert sent_commands[1].split(";")[7] == "27423.5"   # fill 27457 - 33.5
+    assert sent_commands[2].split(";")[6] == "27490.5"   # fill 27457 + 33.5
+
+
+def test_process_order_without_a_bracket_never_checks_fill_slippage(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    monkeypatch.setattr(executor.oif_writer, "write_command", mock.Mock(return_value="x"))
+    gate = mock.Mock()
+    monkeypatch.setattr(price_drift, "evaluate_fill_slippage", gate)
+
+    decision = executor.process_order(_slippage_order(stop_loss_points=None, take_profit_points=None))
+
+    assert decision.allow is True  # no fill is awaited without a bracket, so there is no fill price
+    gate.assert_not_called()
 
 
 def test_process_order_flattens_defensively_on_fill_confirmation_timeout(isolated_state, monkeypatch):
