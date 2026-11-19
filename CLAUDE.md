@@ -52,9 +52,19 @@ On each tick, read `tradovate_bot/CYCLE_PROMPT.md` and run that cycle.
 
 - Start / re-arm: `Monitor(command="cd C:/TradingPlatform_v2/Claude_Trading_v2
   && python -u -m tradovate_bot.cycle_clock 2>&1", timeout_ms=1800000)`.
-- A Monitor lives at most 30 minutes and dies with the session: re-arm it on
-  every expiry notice, and re-create it when a new session starts. Do not also
-  run a CronCreate cycle (duplicate cycles).
+- A Monitor lives at most 30 minutes (the tool caps `timeout_ms` at 1800000,
+  longer values are cut) and dies with the session: re-arm it on every expiry
+  notice, and re-create it when a new session starts. Do not also run a
+  CronCreate cycle (duplicate cycles).
+- Re-arm schedule: at minute :10 and :40 of every hour. A Monitor armed at :10
+  covers the ticks :15/:25/:35 and expires at :40, between ticks, so an expiry
+  never lands on a tick. If a late re-arm or a clock jump leaves it off that
+  grid, stop it and realign to the next :10/:40.
+- The machine clock must be right: `cycle_clock` and the freshness checks use
+  it. If the VPS was suspended, check it against an external source
+  (`curl -sI https://www.microsoft.com | grep -i ^date`) and resync with
+  `w32tm /resync /force` (the Windows Time service must be running; on
+  2026-11-19 it was Disabled and the clock stayed ~14 min behind).
 - Change the cycle by editing `CYCLE_PROMPT.md`, not the Monitor.
 
 ## Market data
