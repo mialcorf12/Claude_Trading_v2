@@ -63,9 +63,11 @@ stopped out in 2 minutes):
   that the +TP target is not sitting on a ceiling tested several times;
 - (d) two closes off a low is not confirmation.
 
-`signals.evaluate_signal(bars, 'buy'|'sell')` is lowercase-only and is only a
-chase/chop backstop: it does NOT verify direction, so "clear" for both sides
-means nothing. No clear edge -> skip.
+`signals.evaluate_signal(bars, 'buy'|'sell')` is lowercase-only. It runs three
+guards: chase, chop and a direction guard that refuses a BUY after a fully
+retraced rally (a SELL after a fully retraced decline). It is still only a
+backstop: it does not confirm that the trend exists or that the stop is
+structural, so "clear" is not an edge. No clear edge -> skip.
 
 **5 (haiku):** if a signal exists, compute `signals.select_bracket_points(bars)`
 on the same 9-bar window and return the (SL, TP) pair.
