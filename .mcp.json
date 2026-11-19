@@ -4,7 +4,7 @@
       "type": "stdio",
       "command": "python",
       "args": [
-        "C:\\TradingPlatform_v2\\Claude_Trading_v2\\tradovate_bot\\localMarketDataMCP.py"
+        "C:\\TradingPlatform_v2\\Claude_Trading_v2\\tradovate_bot\\local_market_data_mcp.py"
       ]
     }
   }
