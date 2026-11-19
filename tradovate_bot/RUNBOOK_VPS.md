@@ -55,7 +55,7 @@ Instalar las librerías necesarias:
 
 ```powershell
 cd C:\TradingPlatform_v2\Claude_Trading_v2
-python -m pip install --user pytest requests
+python -m pip install --user pytest
 
 ```
 

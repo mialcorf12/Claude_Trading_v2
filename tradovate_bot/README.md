@@ -29,11 +29,11 @@ NinjaScript AddOn for account telemetry.
   passes via the OIF writer, and logs every decision and fill.
 - `config.py` -- optional explicit `BotConfig` identity/transport bundle
   (see "Multi-instance config" below).
-- `client.py` -- **historical reference only, not used.** The original
-  direct Tradovate REST/WS client. Confirmed dead end: Tradovate
-  prop-firm/evaluation accounts (incl. Lucid) cannot register API Access.
-  Kept in the repo in case a future, different, live non-prop Tradovate
-  account ever needs it; `executor.py` no longer imports it.
+
+The original direct Tradovate REST/WS client (`client.py`) and its demo
+runbook were removed on 2026-11-19: prop-firm/evaluation accounts (incl.
+Lucid) cannot register API Access, and nothing imported them. They remain in
+git history.
 
 ## NinjaScript AddOn
 
@@ -240,14 +240,6 @@ Sep/Dec) to match NT8's own display name for the new front-month contract.
 It is intentionally not an env var or auto-computed from the roll
 calendar, by explicit choice, to stay consistent with `risk_guard.py`'s
 other hardcoded constants.
-
-### Historical/moot env vars (client.py only, not used by executor.py)
-
-`TRADOVATE_USERNAME`, `TRADOVATE_PASSWORD`, `TRADOVATE_API_KEY`,
-`TRADOVATE_API_SECRET`, `TRADOVATE_ACCOUNT_ID`, `TRADOVATE_DEVICE_ID`,
-`TRADOVATE_ENV` -- these only matter if something still imports `client.py`
-directly (e.g. exploratory/interactive use against a different account).
-`executor.py` does not read or need them.
 
 ## OIF grammar (confirmed, from NT8 ATI docs)
 
