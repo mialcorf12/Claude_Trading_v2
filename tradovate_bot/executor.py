@@ -82,6 +82,13 @@ def _append_jsonl(path, record):
 
 
 def log_decision(order, decision, extra=None):
+    """Appends one decision record. `extra["stage"]` names the check that
+    produced it: normalize, risk_guard, signals_guard, price_drift_gate,
+    position_check, bracket_config, order_placement, bracket_placement, or
+    order_sent (the entry was handed to NT8). The first record of an order is
+    written right after risk_guard, BEFORE the later checks, so its
+    `allow=True` only means risk_guard passed -- look for a final
+    `order_sent` record to know an entry was actually placed."""
     record = {
         "at": time_utils.now_et_iso(),
         "order": order,
@@ -507,12 +514,12 @@ def process_order(raw_order, config=None):
     order = normalize_order(raw_order)
     if order is None:
         decision = risk_guard.Decision(False, "order record could not be normalized (missing/malformed fields)")
-        log_decision(raw_order, decision)
+        log_decision(raw_order, decision, extra={"stage": "normalize"})
         return decision
 
     account_state_dict = fetch_account_state(config=config)
     decision = risk_guard.evaluate_order(order, account_state_dict, time_utils.now_et(), config=config)
-    log_decision(order, decision, extra={"account_state": account_state_dict})
+    log_decision(order, decision, extra={"account_state": account_state_dict, "stage": "risk_guard"})
 
     if not decision.allow:
         return decision
@@ -523,7 +530,7 @@ def process_order(raw_order, config=None):
             False,
             "refusing new entry: signals guard flagged this setup -- %s" % "; ".join(verdict.reasons),
         )
-        log_decision(order, refusal, extra={"signal_reasons": list(verdict.reasons)})
+        log_decision(order, refusal, extra={"signal_reasons": list(verdict.reasons), "stage": "signals_guard"})
         return refusal
 
     drift = price_drift.evaluate_entry_drift(order)
@@ -535,6 +542,7 @@ def process_order(raw_order, config=None):
             "live_price": drift.live_price,
             "drift": drift.drift,
             "drift_threshold": drift.threshold,
+            "stage": "price_drift_gate",
         })
         return refusal
 
@@ -546,7 +554,7 @@ def process_order(raw_order, config=None):
             "refusing new entry: one-position-at-a-time -- current position on account %s is "
             "%s (qty=%s), not Flat" % (account_id, position.side, position.qty),
         )
-        log_decision(order, refusal, extra={"position_side": position.side, "position_qty": position.qty})
+        log_decision(order, refusal, extra={"position_side": position.side, "position_qty": position.qty, "stage": "position_check"})
         return refusal
 
     wants_bracket = order.get("stop_loss_points") is not None or order.get("take_profit_points") is not None
@@ -562,7 +570,7 @@ def process_order(raw_order, config=None):
             "configured, so the real fill price can never be confirmed; refusing to place an entry "
             "this bot could not safely protect",
         )
-        log_decision(order, refusal)
+        log_decision(order, refusal, extra={"stage": "bracket_config"})
         return refusal
 
     seen_before = _snapshot_outgoing_files(config=config) if wants_bracket else None
@@ -570,9 +578,10 @@ def process_order(raw_order, config=None):
     try:
         path = oif_writer.write_command(incoming_dir, entry_command)
     except OSError as exc:
-        log_decision(order, risk_guard.Decision(False, "order placement failed: %s" % exc))
+        log_decision(order, risk_guard.Decision(False, "order placement failed: %s" % exc), extra={"stage": "order_placement"})
         raise
     log_fill({"order": order, "command": entry_command, "oif_path": path, "status": "sent"})
+    log_decision(order, decision, extra={"stage": "order_sent", "oif_path": path})
 
     if not wants_bracket:
         return decision
@@ -597,7 +606,7 @@ def process_order(raw_order, config=None):
         try:
             exit_path = oif_writer.write_command(incoming_dir, command)
         except OSError as exc:
-            log_decision(order, risk_guard.Decision(False, "bracket placement failed: %s" % exc))
+            log_decision(order, risk_guard.Decision(False, "bracket placement failed: %s" % exc), extra={"stage": "bracket_placement"})
             raise
         log_fill({"order": order, "command": command, "oif_path": exit_path, "status": "sent", "fill_price": fill.price})
     return decision

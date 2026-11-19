@@ -314,6 +314,81 @@ def test_process_order_does_not_run_the_drift_gate_when_signals_guard_already_re
     gate.assert_not_called()
 
 
+# ---------------------------------------------------------------- decision log stages
+# (odd/tasks/steps-3-6-7.md #7a) The first record of a decision is written right
+# after risk_guard, BEFORE the signals/drift/position checks, so its allow=True
+# does not mean an order was placed. Every record now names its stage and a final
+# `order_sent` record marks an entry actually handed to NT8.
+
+def test_successful_entry_logs_risk_guard_stage_then_order_sent(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    monkeypatch.setattr(executor.oif_writer, "write_command", mock.Mock(return_value="oif_fake.txt"))
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market", "bars": CLEAN_SIGNAL_BARS}
+
+    executor.process_order(raw_order)
+
+    rows = _read_jsonl(executor.DECISIONS_LOG)
+    assert [r["stage"] for r in rows] == ["risk_guard", "order_sent"]
+    assert rows[-1]["allow"] is True
+    assert rows[-1]["oif_path"] == "oif_fake.txt"
+
+
+def test_signals_refusal_is_the_last_row_and_never_followed_by_order_sent(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    monkeypatch.setattr(executor.oif_writer, "write_command", mock.Mock())
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CHASE_FLAGGED_BARS}
+
+    executor.process_order(raw_order)
+
+    rows = _read_jsonl(executor.DECISIONS_LOG)
+    assert rows[-1]["stage"] == "signals_guard" and rows[-1]["allow"] is False
+    assert all(r["stage"] != "order_sent" for r in rows)
+
+
+def test_drift_refusal_is_staged_as_price_drift_gate(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    monkeypatch.setattr(executor.oif_writer, "write_command", mock.Mock())
+    monkeypatch.setattr(price_drift, "evaluate_entry_drift", lambda order, **kwargs: _drift_refusal())
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CLEAN_SIGNAL_BARS}
+
+    executor.process_order(raw_order)
+
+    assert _read_jsonl(executor.DECISIONS_LOG)[-1]["stage"] == "price_drift_gate"
+
+
+def test_open_position_refusal_is_staged_as_position_check(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    monkeypatch.setattr(executor.oif_writer, "write_command", mock.Mock())
+    monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("Long", 3))
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CLEAN_SIGNAL_BARS}
+
+    executor.process_order(raw_order)
+
+    assert _read_jsonl(executor.DECISIONS_LOG)[-1]["stage"] == "position_check"
+
+
+def test_risk_guard_refusal_is_staged_as_risk_guard(isolated_state, monkeypatch):
+    # no telemetry file configured -> risk_guard refuses
+    monkeypatch.setattr(executor, "ACCOUNT_TELEMETRY_JSON_PATH", "")
+    executor.process_order({"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CLEAN_SIGNAL_BARS})
+
+    rows = _read_jsonl(executor.DECISIONS_LOG)
+    assert rows[-1]["stage"] == "risk_guard" and rows[-1]["allow"] is False
+
+
+def test_failed_oif_write_is_logged_with_the_order_placement_stage(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    monkeypatch.setattr(executor.oif_writer, "write_command", mock.Mock(side_effect=OSError("disk full")))
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CLEAN_SIGNAL_BARS}
+
+    with pytest.raises(OSError):
+        executor.process_order(raw_order)
+
+    rows = _read_jsonl(executor.DECISIONS_LOG)
+    assert rows[-1]["stage"] == "order_placement" and rows[-1]["allow"] is False
+    assert all(r["stage"] != "order_sent" for r in rows)
+
+
 def test_process_order_rejects_outside_trading_hours(isolated_state, monkeypatch):
     monkeypatch.setattr(time_utils, "now_et", lambda: datetime(2026, 11, 9, 17, 0, tzinfo=time_utils.EASTERN))
     _write_telemetry(isolated_state, monkeypatch)
