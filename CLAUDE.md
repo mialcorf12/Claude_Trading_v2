@@ -42,6 +42,21 @@ Commit and push only when the user asks.
 Steps 6-9 touch real orders, so they stay on sonnet. Do not move them to
 haiku without a deliberate decision.
 
+### Cycle scheduler (own clock, not CronCreate)
+
+CronCreate adds a fixed per-job offset (up to half the period), so it cannot
+fire at an exact minute. The cycle is driven by `tradovate_bot/cycle_clock.py`
+under the Monitor tool: it prints `CYCLE_TICK <iso-ET> late=<s>` at :05, :15,
+:25, :35, :45 and :55 ET (the exact second every second 5m bar closes).
+On each tick, read `tradovate_bot/CYCLE_PROMPT.md` and run that cycle.
+
+- Start / re-arm: `Monitor(command="cd C:/TradingPlatform_v2/Claude_Trading_v2
+  && python -u -m tradovate_bot.cycle_clock 2>&1", timeout_ms=1800000)`.
+- A Monitor lives at most 30 minutes and dies with the session: re-arm it on
+  every expiry notice, and re-create it when a new session starts. Do not also
+  run a CronCreate cycle (duplicate cycles).
+- Change the cycle by editing `CYCLE_PROMPT.md`, not the Monitor.
+
 ## Market data
 
 Bars come only from the local NT8 feed (`get_local_candles` in the
