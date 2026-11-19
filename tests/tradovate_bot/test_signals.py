@@ -449,3 +449,51 @@ def test_evaluate_signal_no_longer_says_clear_for_both_sides_on_the_failed_rally
     sell = signals.evaluate_signal(FAILED_RALLY_BARS, "sell")
     assert not (buy.clear and sell.clear)
     assert not any("retraced" in reason.lower() for reason in sell.reasons)
+
+
+# ---------------------------------------------------------------- late-bounce chase check
+# (odd/tasks/fill-slippage-and-chase-size.md #4) A BUY that arrives after the bounce
+# off a swing low has already recovered most of the prior down-leg is a late entry
+# (a SELL: a decline that already gave back most of the prior up-leg). The literal
+# "last bars moved more than 1.2 x the average range" rule was replayed and removed
+# WINNERS, so the size dimension is the recovered fraction of the counter-leg.
+
+def _late_bounce_bars(last_close):
+    # down-leg 200 -> 150 (swing low 150), then a bounce whose last close is `last_close`
+    return [
+        {"open": 198.0, "high": 200.0, "low": 190.0, "close": 191.0},
+        {"open": 191.0, "high": 192.0, "low": 180.0, "close": 181.0},
+        {"open": 181.0, "high": 182.0, "low": 170.0, "close": 171.0},
+        {"open": 171.0, "high": 172.0, "low": 160.0, "close": 161.0},
+        {"open": 161.0, "high": 162.0, "low": 150.0, "close": 152.0},
+        {"open": 152.0, "high": 170.0, "low": 152.0, "close": 165.0},
+        {"open": 165.0, "high": 180.0, "low": 163.0, "close": 170.0},
+        {"open": 170.0, "high": last_close + 2.0, "low": 168.0, "close": last_close},
+    ]
+
+
+def test_chase_guard_flags_a_buy_after_the_bounce_recovered_most_of_the_down_leg():
+    result = signals.check_chase_guard(_late_bounce_bars(190.0), "buy")   # 80% of the 50 pt leg
+    assert result.flagged is True
+    assert "recovered" in result.reason.lower()
+
+
+def test_chase_guard_allows_a_buy_when_the_bounce_recovered_only_half_the_down_leg():
+    result = signals.check_chase_guard(_late_bounce_bars(175.0), "buy")   # 50%
+    assert result.flagged is False
+
+
+def test_chase_guard_late_bounce_check_is_symmetric_for_a_sell():
+    mirrored = _mirror(_late_bounce_bars(190.0), axis=400.0)
+    assert signals.check_chase_guard(mirrored, "sell").flagged is True
+    assert signals.check_chase_guard(_mirror(_late_bounce_bars(175.0), axis=400.0), "sell").flagged is False
+
+
+def test_chase_guard_late_bounce_check_ignores_a_window_with_no_prior_counter_leg():
+    # the swing low is the first bar: nothing was recovered, so the check does not apply
+    assert signals.check_chase_guard(PULLBACK_CONTINUATION_BARS, "buy").flagged is False
+    assert signals.check_chase_guard(NEITHER_FIRES_BARS, "buy").flagged is False
+
+
+def test_chase_guard_late_bounce_threshold_is_the_replayed_value():
+    assert signals.MAX_COUNTER_LEG_RECOVERY == 0.75

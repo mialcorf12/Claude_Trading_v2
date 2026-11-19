@@ -116,6 +116,13 @@ VALID_DIRECTIONS = ("buy", "sell")
 MIN_CHASE_STREAK = 4
 CHASE_LOOKBACK_BARS = 8
 MIN_BARS_FOR_CHASE_CHECK = MIN_CHASE_STREAK + 1  # 5
+# Late-bounce check (odd/tasks/fill-slippage-and-chase-size.md #4): refuse an entry
+# when the counter-move has already recovered more than this fraction of the prior
+# counter-leg. Replay of 2026-11-18 (97 trades the other guards allowed): >75%
+# removed 25 trades netting -150.8 pts; >50% removed 31 netting -100.5 pts. The
+# literal "last bars moved > k x average range" variants removed WINNERS, so they
+# are not used. Small, in-sample evidence.
+MAX_COUNTER_LEG_RECOVERY = 0.75
 
 CHOP_WINDOW_BARS = 9
 CHOP_SWING_THRESHOLD = 3
@@ -188,6 +195,34 @@ def _valid_bars(bars):
 
 # ---------------------------------------------------------------- individual guards
 
+def _counter_leg_recovery(bars, direction):
+    """Fraction of the prior counter-leg already recovered, or None when it does
+    not apply. For a buy: the swing low is the last bar with the lowest low in
+    the trailing DIRECTION_WINDOW_BARS, the counter-leg runs from the highest
+    high BEFORE it down to that low, and the recovery is (last close - swing
+    low) / leg. A sell mirrors it. None when the swing is the first bar (no
+    counter-leg) or the leg is zero."""
+    window = bars[-DIRECTION_WINDOW_BARS:]
+    highs = [b["high"] for b in window]
+    lows = [b["low"] for b in window]
+    last = window[-1]["close"]
+    if direction == "buy":
+        extreme = min(lows)
+        i_ext = len(lows) - 1 - lows[::-1].index(extreme)
+        before = highs[:i_ext]
+        if not before:
+            return None
+        leg = max(before) - extreme
+        return (last - extreme) / leg if leg > 0 else None
+    extreme = max(highs)
+    i_ext = len(highs) - 1 - highs[::-1].index(extreme)
+    before = lows[:i_ext]
+    if not before:
+        return None
+    leg = extreme - min(before)
+    return (extreme - last) / leg if leg > 0 else None
+
+
 def check_chase_guard(bars, direction):
     """Pullback-over-chase guard (rule 1, see module docstring).
 
@@ -211,6 +246,11 @@ def check_chase_guard(bars, direction):
     decline cleared as "not chasing" solely because of an unrelated
     uptick several bars earlier. Recency, not mere presence, is what the
     rule was always meant to require.
+
+    A second, size-based condition (added 2026-11-19): flagged as a "late
+    entry" when the counter-move has already recovered more than
+    MAX_COUNTER_LEG_RECOVERY of the prior counter-leg (see
+    _counter_leg_recovery and the constant's comment for the replay evidence).
 
     Fails closed (flagged=True) for an unrecognized direction, malformed
     bars, or fewer than MIN_BARS_FOR_CHASE_CHECK bars -- there is no
@@ -250,6 +290,15 @@ def check_chase_guard(bars, direction):
             "%d consecutive new extremes with zero retracement since the run started -- chasing an "
             "extended %s move (see cycle 18 root cause, odd/tasks/tradovate-execution-bot.md)"
             % (run, direction),
+        )
+
+    recovered = _counter_leg_recovery(bars, direction)
+    if recovered is not None and recovered > MAX_COUNTER_LEG_RECOVERY:
+        return GuardResult(
+            True,
+            "late entry: the counter-move has already recovered %.0f%% of the prior %s counter-leg "
+            "(limit %.0f%%) -- chasing a bounce that is mostly spent"
+            % (100 * recovered, "down" if direction == "buy" else "up", 100 * MAX_COUNTER_LEG_RECOVERY),
         )
 
     pullback_found = any(step is False for step in steps)
