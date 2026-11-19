@@ -25,7 +25,7 @@ import time
 import uuid
 from dataclasses import dataclass
 
-from tradovate_bot import account_state, oif_writer, position_state, risk_guard, signals, time_utils
+from tradovate_bot import account_state, oif_writer, position_state, price_drift, risk_guard, signals, time_utils
 
 STATE_DIR = os.path.join(os.path.dirname(__file__), "state")
 DECISIONS_LOG = os.path.join(STATE_DIR, "decisions.log.jsonl")
@@ -478,8 +478,16 @@ def process_order(raw_order, config=None):
     prose the cron prompt has to re-derive every cycle. See
     odd/tasks/tradovate-architecture-scaling.md task 4.
 
-    After risk_guard and the signals guard both pass but before placing
-    the entry, this also enforces one-position-at-a-time: if
+    After the signals guard passes, the price-drift gate (price_drift.py)
+    refuses the entry if the live 1-minute price has moved away from the
+    decision price (the last bar close in order["bars"]) by more than a
+    fraction of the stop distance, or if that live price cannot be read or
+    is stale -- fail closed. Stop/target are anchored to the FILL, so
+    without this a move between decision and fill silently shifts the whole
+    bracket. See odd/tasks/price-drift-gate.md.
+
+    After risk_guard, the signals guard and the drift gate all pass but
+    before placing the entry, this also enforces one-position-at-a-time: if
     current_position() reports anything other than Flat (an open
     Long/Short, or "unknown" because the log couldn't be read) the entry
     is refused -- this bot is single-order/single-position by design, so
@@ -516,6 +524,18 @@ def process_order(raw_order, config=None):
             "refusing new entry: signals guard flagged this setup -- %s" % "; ".join(verdict.reasons),
         )
         log_decision(order, refusal, extra={"signal_reasons": list(verdict.reasons)})
+        return refusal
+
+    drift = price_drift.evaluate_entry_drift(order)
+    if not drift.ok:
+        refusal = risk_guard.Decision(False, "refusing new entry: %s" % "; ".join(drift.reasons))
+        log_decision(order, refusal, extra={
+            "drift_reasons": list(drift.reasons),
+            "decision_price": drift.decision_price,
+            "live_price": drift.live_price,
+            "drift": drift.drift,
+            "drift_threshold": drift.threshold,
+        })
         return refusal
 
     position = current_position(config=config) if config is not None else current_position()

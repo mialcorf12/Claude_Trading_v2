@@ -14,7 +14,7 @@ from unittest import mock
 import pytest
 
 from tradovate_bot import config as config_module
-from tradovate_bot import executor, position_state, time_utils
+from tradovate_bot import executor, position_state, price_drift, time_utils
 
 # Wednesday 2026-11-11, 10:00 ET -- unambiguously within trading hours, so
 # executor tests never depend on the real wall-clock time when they run.
@@ -67,6 +67,12 @@ def isolated_state(tmp_path, monkeypatch):
     # one-position-at-a-time safeguard aren't affected by it -- tests that
     # exercise that safeguard override this explicitly.
     monkeypatch.setattr(executor, "current_position", lambda: position_state.PositionState("Flat", 0))
+    # Default the price-drift gate to "clear" so tests that aren't about it
+    # never depend on the real candles/ file -- tests that exercise the gate
+    # override this explicitly (see "price-drift gate wiring" below).
+    monkeypatch.setattr(
+        price_drift, "evaluate_entry_drift", lambda order, **kwargs: price_drift.DriftVerdict(True, ())
+    )
     yield tmp_path
 
 
@@ -219,6 +225,66 @@ def test_process_order_proceeds_when_bars_pass_signal_guard(isolated_state, monk
 
     assert decision.allow is True  # reaches the existing one-position-at-a-time/placement logic unchanged
     write_command.assert_called_once()
+
+
+# ---------------------------------------------------------------- price-drift gate wiring
+# (odd/tasks/price-drift-gate.md): after the signals guard and before the
+# one-position-at-a-time check, an entry whose live price has drifted away
+# from the decision price is refused -- nothing is written to NT8.
+
+def _drift_refusal(reason="price-drift gate: live price 27438.00 is 21.50 pts from the decision price 27459.50 (limit 8.38 pts)"):
+    return price_drift.DriftVerdict(False, (reason,), 27459.5, 27438.0, 21.5, 8.375)
+
+
+def test_process_order_refuses_entry_when_price_drift_gate_flags(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock()
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    monkeypatch.setattr(price_drift, "evaluate_entry_drift", lambda order, **kwargs: _drift_refusal())
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 3, "type": "market",
+                 "stop_loss_points": 33.5, "take_profit_points": 33.5, "bars": CLEAN_SIGNAL_BARS}
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is False
+    assert "drift" in decision.reason.lower()
+    write_command.assert_not_called()
+    rows = _read_jsonl(executor.DECISIONS_LOG)
+    assert rows[-1]["allow"] is False
+    assert "drift" in rows[-1]["reason"].lower()
+    assert rows[-1]["drift_reasons"] == list(_drift_refusal().reasons)
+
+
+def test_process_order_passes_the_normalized_order_to_the_drift_gate(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    monkeypatch.setattr(executor.oif_writer, "write_command", mock.Mock(return_value="x"))
+    seen = []
+
+    def fake_gate(order, **kwargs):
+        seen.append(order)
+        return price_drift.DriftVerdict(True, ())
+
+    monkeypatch.setattr(price_drift, "evaluate_entry_drift", fake_gate)
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 2, "type": "market", "bars": CLEAN_SIGNAL_BARS}
+
+    executor.process_order(raw_order)
+
+    assert len(seen) == 1
+    assert seen[0]["bars"] == CLEAN_SIGNAL_BARS
+    assert seen[0]["symbol"] == "MNQ"
+
+
+def test_process_order_does_not_run_the_drift_gate_when_signals_guard_already_refused(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    monkeypatch.setattr(executor.oif_writer, "write_command", mock.Mock())
+    gate = mock.Mock()
+    monkeypatch.setattr(price_drift, "evaluate_entry_drift", gate)
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 1, "type": "market", "bars": CHASE_FLAGGED_BARS}
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is False
+    gate.assert_not_called()
 
 
 def test_process_order_rejects_outside_trading_hours(isolated_state, monkeypatch):
