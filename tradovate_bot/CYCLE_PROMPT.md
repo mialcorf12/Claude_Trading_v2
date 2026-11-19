@@ -72,18 +72,38 @@ structural, so "clear" is not an edge. No clear edge -> skip.
 **5 (haiku):** if a signal exists, compute `signals.select_bracket_points(bars)`
 on the same 9-bar window and return the (SL, TP) pair.
 
-**6-9 (sonnet, inline):** write `trader/orders.json` as a JSON list: symbol
-MNQ, side lowercase, qty 3, type market, `stop_loss_points`,
-`take_profit_points` and the exact `bars` list from the MCP. Write it
-IMMEDIATELY after deciding. The executor's price-drift gate uses
+**6-9 (sonnet, inline):**
+
+*Thesis (required before any order).* State ONE line and keep it: `TREND:
+<up|down> leg <origin> -> <extreme>; pullback low/high <x> vs origin <y>
+(retraced <n>%); <why now>`. If you cannot name a trend and a leg whose origin
+was NOT reached again by the pullback, it is a skip, not an order. Put the
+thesis at the start of `signal_reason` in the cycle log.
+
+*Re-read right before writing (one call, no loop).* Call `get_local_candles`
+(MNQ, timeframe `1m`, limit 3) and compare its last close with `bars[-1].close`
+of the 5m decision. If they differ by more than 0.25 x the stop (the same limit
+the executor enforces, about 8.4 pts for a 33.5 pt stop), skip and log "pre-order
+drift: decision <a>, live <b>". Do not re-decide on the fresh price.
+
+*Write.* `trader/orders.json` as a JSON list: symbol MNQ, side lowercase, qty
+3, type market, `stop_loss_points`, `take_profit_points` and the exact `bars`
+list from the MCP. Write it IMMEDIATELY after the re-read. The executor's
+price-drift gate uses
 `bars[-1].close` as the decision price and compares it with the live 1m close
 in `candles/MNQ_1m.json`: it refuses an entry that drifted more than 0.25 x
 stop (about 8.4 pts), or when the live 1m price is unreadable or stale. If
 `decisions.log.jsonl` shows a "price-drift gate" refusal, do NOT rewrite or
-retry; log the cycle as skipped with that reason. Otherwise confirm the new
-line in `tradovate_bot/state/decisions.log.jsonl` and NT8's own confirmation
-(position + bracket in the NT8 log), and respect any risk_guard/signals
-rejection -- never route around it.
+retry; log the cycle as skipped with that reason.
+
+*Confirm placement.* Every record in `tradovate_bot/state/decisions.log.jsonl`
+has a `stage`. The first one (`risk_guard`) has `allow=true` BEFORE the signals,
+drift and position checks, so it does NOT mean an order was placed. An order is
+placed only when a later record has `stage: "order_sent"`; a refusal ends with a
+record whose `stage` names the guard that refused it (`signals_guard`,
+`price_drift_gate`, `position_check`, `bracket_config`, ...). Then confirm NT8's
+own confirmation (position + bracket in the NT8 log), and respect any
+risk_guard/signals rejection -- never route around it.
 
 **10:** folded into step 1 (service started after the last
 `tradovate_bot/*.py` change; uncommitted edits are not visible to `git log`).

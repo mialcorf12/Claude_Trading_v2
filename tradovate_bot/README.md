@@ -286,7 +286,13 @@ still-open VPS deployment runbook.
 ## State files
 
 `tradovate_bot/state/decisions.log.jsonl` -- one JSON line per order
-decision (pass or reject with reason), never silently dropped.
+decision (pass or reject with reason), never silently dropped. Every record
+carries a `stage` naming the check that wrote it: `normalize`, `risk_guard`,
+`signals_guard`, `price_drift_gate`, `position_check`, `bracket_config`,
+`order_placement`, `bracket_placement`, or `order_sent`. The first record of an
+order (`risk_guard`) is written BEFORE the later checks, so its `allow=true`
+only means risk_guard passed: an entry was handed to NT8 only when a later
+`order_sent` record exists.
 `tradovate_bot/state/fills.jsonl` -- one JSON line per placed order (OIF
 command sent) and per NT8 outgoing confirmation file observed.
 
