@@ -64,8 +64,12 @@ stopped out in 2 minutes):
 - (d) two closes off a low is not confirmation.
 
 `signals.evaluate_signal(bars, 'buy'|'sell')` is lowercase-only. It runs three
-guards: chase, chop and a direction guard that refuses a BUY after a fully
-retraced rally (a SELL after a fully retraced decline). It is still only a
+guards: chase (consecutive new extremes, plus a "late entry" check that refuses
+a bounce which already recovered more than 75% of the prior counter-leg), chop,
+and a direction guard that refuses a BUY after a fully retraced rally (a SELL
+after a fully retraced decline). After a bracketed fill the executor also
+flattens at once if the fill slipped more than 0.25 x the stop from the decision
+price (decisions.log stage `fill_slippage`); treat that as a skipped cycle. It is still only a
 backstop: it does not confirm that the trend exists or that the stop is
 structural, so "clear" is not an edge. No clear edge -> skip.
 

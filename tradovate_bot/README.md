@@ -137,6 +137,21 @@ It only runs on entries. Env overrides: `PRICE_DRIFT_MAX_FRACTION`,
 `PRICE_DRIFT_MAX_POINTS`, `PRICE_DRIFT_MAX_AGE_SECONDS`. The service must be
 restarted to load changes (Python does not hot-reload).
 
+## Fill-slippage check and late-bounce guard
+
+- After a bracketed entry fills, `executor.process_order` compares the CONFIRMED
+  fill price with the decision price (`bars[-1].close`) using the same limit as
+  the price-drift gate (0.25 x stop, 8.0 pts without a stop). If the fill slipped
+  past it, the position is flattened at once (`CLOSEPOSITION`), NO bracket is
+  placed, and the decision log gets a `fill_slippage` record; within the limit the
+  bracket stays anchored to the fill. Orders without a bracket never wait for a
+  fill and are not checked. See `odd/tasks/fill-slippage-and-chase-size.md`.
+- `signals.check_chase_guard` also flags a "late entry": a buy after the bounce
+  off a swing low has already recovered more than 75% of the prior down-leg (a
+  sell: of the prior up-leg). Chosen by replay of 2026-11-18; the literal
+  "last bars moved more than k x the average range" rules removed winners and
+  are not used.
+
 ## Required environment variables (current, ATI path)
 
 | Variable | Purpose |
