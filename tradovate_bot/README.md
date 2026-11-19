@@ -232,14 +232,15 @@ protect). If fill confirmation doesn't arrive within the timeout,
 `process_order` defensively flattens the position via `CLOSEPOSITION`
 rather than risk leaving it open with no stop and no target.
 
-`executor.py` also has a hardcoded `NT8_INSTRUMENT` constant (currently
-`"MNQ 12-26"`) for the OIF command's INSTRUMENT field -- NT8 rejects the
-generic `"MNQ"` root outright (confirmed live: no market data available
-for it). This must be updated by hand every quarterly MNQ roll (Mar/Jun/
-Sep/Dec) to match NT8's own display name for the new front-month contract.
-It is intentionally not an env var or auto-computed from the roll
-calendar, by explicit choice, to stay consistent with `risk_guard.py`'s
-other hardcoded constants.
+The OIF command's INSTRUMENT field comes from `config.DEFAULT_INSTRUMENT`
+(currently `"MNQ 12-26"`; `executor.NT8_INSTRUMENT` is its value) -- NT8
+rejects the generic `"MNQ"` root outright (confirmed live: no market data
+available for it). **On every quarterly MNQ roll (Mar/Jun/Sep/Dec) edit
+`DEFAULT_INSTRUMENT` in `tradovate_bot/config.py` -- the only place** -- to
+match NT8's own display name for the new front-month contract, then restart
+the `TradovateExecutor` service. It is intentionally not an env var or
+auto-computed from the roll calendar, by explicit choice, to stay consistent
+with `risk_guard.py`'s other hardcoded constants.
 
 ## OIF grammar (confirmed, from NT8 ATI docs)
 
@@ -268,6 +269,11 @@ output once ATI is enabled on the VPS, before trusting any specific field
 from it for anything beyond logging.
 
 ## Multi-instance config (`BotConfig`)
+
+`BotConfig.from_env()` is the single place that reads these env vars and owns
+their defaults: `executor.py`'s module-level names are built from it at import
+time (a test asserts the executor keeps no second copy), so changing a default
+or the contract name is one edit in `config.py`.
 
 Every identity/transport value above (`NT8_INCOMING_DIR`,
 `NT8_OUTGOING_DIR`, `NT8_ACCOUNT_ID`, `NT8_INSTRUMENT`, `NT8_LOG_DIR`,
