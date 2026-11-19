@@ -39,6 +39,20 @@ CLEAN_SIGNAL_BARS = [
     {"open": 112.0, "high": 130.0, "low": 114.0, "close": 115.0},
 ]
 
+# The 21:15-21:55 window behind the 2026-11-18 BUY that lost $200.50: a rally
+# fully retraced to a new low (failed rally). The direction guard refuses a BUY on it.
+FAILED_RALLY_BARS = [
+    {"open": 27413.25, "high": 27496.50, "low": 27407.75, "close": 27493.25},
+    {"open": 27493.00, "high": 27510.00, "low": 27468.00, "close": 27503.25},
+    {"open": 27503.75, "high": 27506.75, "low": 27459.00, "close": 27488.25},
+    {"open": 27488.75, "high": 27495.00, "low": 27455.00, "close": 27459.00},
+    {"open": 27458.25, "high": 27461.50, "low": 27424.00, "close": 27430.50},
+    {"open": 27431.50, "high": 27443.00, "low": 27410.00, "close": 27416.75},
+    {"open": 27417.75, "high": 27428.75, "low": 27398.75, "close": 27405.00},
+    {"open": 27405.25, "high": 27443.75, "low": 27401.00, "close": 27429.00},
+    {"open": 27428.25, "high": 27463.00, "low": 27419.00, "close": 27459.50},
+]
+
 # Cycle 18's exact chase scenario (see tests/tradovate_bot/test_signals.py
 # and tradovate_bot/signals.py's module docstring): four consecutive higher
 # closes off the 11:55 low with zero retracement -- trips the chase guard
@@ -212,6 +226,19 @@ def test_process_order_refuses_entry_when_chase_guard_flags_bars(isolated_state,
 
     assert decision.allow is False
     assert "signal" in decision.reason.lower()
+    write_command.assert_not_called()
+
+
+def test_process_order_refuses_buy_when_direction_guard_flags_a_failed_rally(isolated_state, monkeypatch):
+    _write_telemetry(isolated_state, monkeypatch)
+    write_command = mock.Mock()
+    monkeypatch.setattr(executor.oif_writer, "write_command", write_command)
+    raw_order = {"symbol": "MNQ", "side": "buy", "qty": 3, "type": "market", "bars": FAILED_RALLY_BARS}
+
+    decision = executor.process_order(raw_order)
+
+    assert decision.allow is False
+    assert "signal" in decision.reason.lower() and "retraced" in decision.reason.lower()
     write_command.assert_not_called()
 
 

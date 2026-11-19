@@ -121,6 +121,10 @@ CHOP_WINDOW_BARS = 9
 CHOP_SWING_THRESHOLD = 3
 MIN_BARS_FOR_CHOP_CHECK = 5
 
+DIRECTION_WINDOW_BARS = 9
+MIN_BARS_FOR_DIRECTION_CHECK = 5
+MIN_LEG_AVG_RANGES = 1.0   # a leg smaller than this many average bar ranges is not a trend
+
 VOLATILITY_LOOKBACK_BARS = 9
 NARROW_BRACKET_POINTS = 16.75   # ~$100 at $6/point (3 contracts), the existing default
 WIDE_BRACKET_POINTS = 33.5      # ~$200 at $6/point (3 contracts)
@@ -312,27 +316,124 @@ def check_chop_guard(bars):
     return GuardResult(False, "only %d direction reversal(s) in the trailing window -- not chop" % swings)
 
 
+def check_direction_guard(bars, direction):
+    """Direction-support guard (rule 3, odd/tasks/direction-guard.md).
+
+    The chase and chop guards never look at direction, so on 2026-11-18 a
+    failed rally (a 102 pt rally FULLY retraced to a new low, lower highs
+    after) was 'clear' for both buy and sell and a BUY on it lost $200.50.
+    This guard asks whether the candidate direction is actually supported
+    by the structure of the trailing DIRECTION_WINDOW_BARS bars.
+
+    For a buy: the swing high is the LAST bar carrying the window's highest
+    high; the leg's origin is the lowest low BEFORE it. Flagged ONLY when
+    the leg is meaningful (at least MIN_LEG_AVG_RANGES average bar ranges)
+    and the lowest low AFTER the swing high is at or below the origin: the
+    rally was fully retraced, a failed rally and not a pullback. A sell
+    mirrors this with highs and lows swapped. Not flagged: a move still
+    extending (the swing is the last bar -- the chase guard owns that
+    case), a swing with no prior leg, or a leg too small to be a trend.
+
+    Scope decision 2026-11-19: a first version also refused "no prior leg"
+    and "leg too small". Replaying the 2026-11-18 session (191 windows, 5m
+    bars, simulated 1:1 bracket) showed those two extra rules removed
+    winners (+234.5 and +67.0 pts) while the retrace rule removed losers
+    (-150.8 pts), so only the retrace rule is enforced. Small, in-sample
+    evidence; see odd/tasks/direction-guard.md.
+
+    Fails closed (flagged=True) for an unrecognized direction, malformed
+    bars, or fewer than MIN_BARS_FOR_DIRECTION_CHECK bars."""
+    if direction not in VALID_DIRECTIONS:
+        return GuardResult(True, "direction must be 'buy' or 'sell', got %r" % (direction,))
+    if not _valid_bars(bars):
+        return GuardResult(True, "bars missing or malformed -- cannot confirm the direction is supported, failing closed")
+    if len(bars) < MIN_BARS_FOR_DIRECTION_CHECK:
+        return GuardResult(
+            True,
+            "insufficient bars (%d < %d) to confirm the %s direction is supported -- failing closed"
+            % (len(bars), MIN_BARS_FOR_DIRECTION_CHECK, direction),
+        )
+
+    window = bars[-DIRECTION_WINDOW_BARS:]
+    highs = [b["high"] for b in window]
+    lows = [b["low"] for b in window]
+    avg_range = sum(h - l for h, l in zip(highs, lows)) / len(window)
+
+    if direction == "buy":
+        extreme = max(highs)
+        i_ext = len(highs) - 1 - highs[::-1].index(extreme)
+        before, after = lows[:i_ext], lows[i_ext + 1:]
+        leg_name, trend_name = "up-leg", "rally"
+        if not before:
+            return GuardResult(
+                False,
+                "no prior up-leg in the trailing %d-bar window (the swing high is its first bar): nothing "
+                "to retrace, not flagged" % len(window),
+            )
+        origin = min(before)
+        leg = extreme - origin
+        retraced = bool(after) and min(after) <= origin
+        retrace_low = min(after) if after else None
+    else:  # "sell"
+        extreme = min(lows)
+        i_ext = len(lows) - 1 - lows[::-1].index(extreme)
+        before, after = highs[:i_ext], highs[i_ext + 1:]
+        leg_name, trend_name = "down-leg", "decline"
+        if not before:
+            return GuardResult(
+                False,
+                "no prior down-leg in the trailing %d-bar window (the swing low is its first bar): nothing "
+                "to retrace, not flagged" % len(window),
+            )
+        origin = max(before)
+        leg = origin - extreme
+        retraced = bool(after) and max(after) >= origin
+        retrace_low = max(after) if after else None
+
+    if leg < MIN_LEG_AVG_RANGES * avg_range:
+        return GuardResult(
+            False,
+            "the prior %s (%.2f pts) is smaller than %.1f average bar ranges (%.2f pts): no meaningful trend, "
+            "not flagged" % (leg_name, leg, MIN_LEG_AVG_RANGES, avg_range),
+        )
+    if retraced:
+        return GuardResult(
+            True,
+            "the %s (%.2f -> %.2f) was fully retraced (pullback reached %.2f, at or beyond its origin): "
+            "a failed %s, not a pullback (see 2026-11-18, odd/tasks/direction-guard.md)"
+            % (trend_name, origin, extreme, retrace_low, trend_name),
+        )
+    return GuardResult(
+        False,
+        "the %s (%.2f pts) is intact: %s" % (
+            leg_name, leg,
+            "no retracement yet" if not after else "the pullback did not reach its origin",
+        ),
+    )
+
+
 # ---------------------------------------------------------------- top-level verdict
 
 def evaluate_signal(bars, direction):
-    """Run both guards for a candidate direction and return one
-    SignalVerdict. `clear=True` only when neither guard fired; otherwise
-    `reasons` carries every guard's reason that did fire, so a blocked
-    caller sees exactly what tripped (chase, chop, or both -- e.g. when
-    bars are too few to confirm either).
+    """Run every guard for a candidate direction and return one
+    SignalVerdict. `clear=True` only when no guard fired; otherwise
+    `reasons` carries every guard's reason that did fire, in the order
+    chase, chop, direction, so a blocked caller sees exactly what tripped
+    (e.g. all three when bars are too few to confirm anything).
 
-    This is the one function an external caller (the cron prompt's
-    procedure, or any future automated caller -- see this module's
-    docstring, not wired into executor.py yet) actually needs: it does
-    not replace the broader discretionary read, only formalizes these two
-    specific guardrails."""
+    The direction guard (added 2026-11-19) is what stops this returning
+    'clear' for both buy and sell on the same bars. This is the one
+    function an external caller (executor.process_order, and the cron
+    prompt's procedure) actually needs: it does not replace the broader
+    discretionary read, only formalizes these specific guardrails."""
     if direction not in VALID_DIRECTIONS:
         return SignalVerdict(False, direction, ("direction must be 'buy' or 'sell', got %r" % (direction,),))
 
     chase = check_chase_guard(bars, direction)
     chop = check_chop_guard(bars)
+    direction_support = check_direction_guard(bars, direction)
 
-    reasons = tuple(result.reason for result in (chase, chop) if result.flagged)
+    reasons = tuple(result.reason for result in (chase, chop, direction_support) if result.flagged)
     return SignalVerdict(clear=not reasons, direction=direction, reasons=reasons)
 
 

@@ -265,17 +265,19 @@ def test_evaluate_signal_blocks_on_chase_guard_only():
     assert "chasing" in verdict.reasons[0].lower()
 
 
-def test_evaluate_signal_blocks_on_chop_guard_only():
+def test_evaluate_signal_blocks_on_the_chop_guard():
+    # Contract change 2026-11-19: CHOP_BARS also fails the new direction guard
+    # (its range retraces fully), so this no longer asserts "chop only".
     verdict = signals.evaluate_signal(CHOP_BARS, "buy")
     assert verdict.clear is False
-    assert len(verdict.reasons) == 1
-    assert "chop" in verdict.reasons[0].lower()
+    assert any("chop" in reason.lower() for reason in verdict.reasons)
 
 
-def test_evaluate_signal_blocks_on_both_guards_when_bars_insufficient():
+def test_evaluate_signal_blocks_on_every_guard_when_bars_insufficient():
+    # Contract change 2026-11-19: three guards (chase, chop, direction) fail closed.
     verdict = signals.evaluate_signal(TOO_FEW_BARS, "buy")
     assert verdict.clear is False
-    assert len(verdict.reasons) == 2
+    assert len(verdict.reasons) == 3
 
 
 def test_evaluate_signal_allows_when_neither_guard_fires():
@@ -332,3 +334,118 @@ def test_select_bracket_points_boundary_just_below_threshold_is_narrow():
 
 def test_select_bracket_points_boundary_just_above_threshold_is_wide():
     assert signals.select_bracket_points(BOUNDARY_ABOVE_40_BARS) == (33.5, 33.5)
+
+
+# ---------------------------------------------------------------- direction guard
+# (odd/tasks/direction-guard.md) -- the guard that says whether the candidate
+# direction is supported by the structure of the window.
+
+def _mirror(bars, axis=60000.0):
+    """Flip a bar list top-to-bottom: turns a rally into a decline of the
+    same shape, so one fixture can test both directions symmetrically."""
+    return [
+        {"open": axis - b["open"], "high": axis - b["low"], "low": axis - b["high"], "close": axis - b["close"]}
+        for b in bars
+    ]
+
+
+# The 9 bars (stamped 21:15..21:55 ET on 2026-11-18) behind the BUY that lost
+# $200.50: a 102 pt rally (27407.75 -> 27510) that was FULLY retraced to a new
+# low (27398.75), with lower highs afterwards. A failed rally, not a pullback.
+FAILED_RALLY_BARS = [
+    {"open": 27413.25, "high": 27496.50, "low": 27407.75, "close": 27493.25},
+    {"open": 27493.00, "high": 27510.00, "low": 27468.00, "close": 27503.25},
+    {"open": 27503.75, "high": 27506.75, "low": 27459.00, "close": 27488.25},
+    {"open": 27488.75, "high": 27495.00, "low": 27455.00, "close": 27459.00},
+    {"open": 27458.25, "high": 27461.50, "low": 27424.00, "close": 27430.50},
+    {"open": 27431.50, "high": 27443.00, "low": 27410.00, "close": 27416.75},
+    {"open": 27417.75, "high": 27428.75, "low": 27398.75, "close": 27405.00},
+    {"open": 27405.25, "high": 27443.75, "low": 27401.00, "close": 27429.00},
+    {"open": 27428.25, "high": 27463.00, "low": 27419.00, "close": 27459.50},
+]
+
+
+def test_direction_guard_flags_buy_after_a_fully_retraced_rally():
+    result = signals.check_direction_guard(FAILED_RALLY_BARS, "buy")
+    assert result.flagged is True
+    assert "retraced" in result.reason.lower()
+
+
+def test_direction_guard_does_not_flag_sell_on_the_same_failed_rally():
+    # the down-leg 27510 -> 27398.75 is intact: the 27463 bounce retraced ~58%
+    result = signals.check_direction_guard(FAILED_RALLY_BARS, "sell")
+    assert result.flagged is False
+
+
+def test_direction_guard_is_symmetric_for_a_fully_retraced_decline():
+    mirrored = _mirror(FAILED_RALLY_BARS)
+    sell = signals.check_direction_guard(mirrored, "sell")
+    buy = signals.check_direction_guard(mirrored, "buy")
+    assert sell.flagged is True and "retraced" in sell.reason.lower()
+    assert buy.flagged is False
+
+
+def test_direction_guard_allows_buy_on_a_real_pullback_continuation():
+    # cycle 23: the pullback low (27640) stays far above the leg origin (27594.5)
+    assert signals.check_direction_guard(PULLBACK_CONTINUATION_BARS, "buy").flagged is False
+
+
+def test_direction_guard_allows_sell_on_a_mirrored_pullback_continuation():
+    assert signals.check_direction_guard(_mirror(PULLBACK_CONTINUATION_BARS), "sell").flagged is False
+
+
+def test_direction_guard_lets_a_still_extending_move_through_for_the_chase_guard():
+    # swing high is the last bar: nothing to retrace yet (chase guard owns this case)
+    assert signals.check_direction_guard(NEITHER_FIRES_BARS, "buy").flagged is False
+
+
+def test_direction_guard_does_not_flag_sell_with_no_prior_down_leg():
+    # Scope decision 2026-11-19: the replay showed refusing these removed winners (+234.5 pts).
+    result = signals.check_direction_guard(NEITHER_FIRES_BARS, "sell")
+    assert result.flagged is False
+    assert "prior" in result.reason.lower()
+
+
+def test_direction_guard_does_not_flag_buy_with_no_prior_up_leg():
+    result = signals.check_direction_guard(_mirror(NEITHER_FIRES_BARS), "buy")
+    assert result.flagged is False
+    assert "prior" in result.reason.lower()
+
+
+def test_direction_guard_does_not_flag_a_leg_too_small_to_be_a_trend():
+    # four tiny bars (1 pt range, swing high 101.5 -> leg of 1.5 pts) followed by four wide
+    # bars whose lows fall far below the origin: without the size exemption this would read
+    # as a "fully retraced rally"; the leg is far smaller than the average range, so it is not.
+    tiny = [{"open": 100.0, "high": 101.0, "low": 100.0, "close": 100.5} for _ in range(4)]
+    tiny[3] = {"open": 100.0, "high": 101.5, "low": 100.0, "close": 100.5}  # highest high
+    wide = [{"open": 100.0, "high": 101.0, "low": 80.0, "close": 90.0} for _ in range(4)]
+    result = signals.check_direction_guard(tiny + wide, "buy")
+    assert result.flagged is False
+    assert "smaller" in result.reason.lower()
+
+
+def test_direction_guard_fails_closed_on_bad_input():
+    assert signals.check_direction_guard(FAILED_RALLY_BARS, "up").flagged is True
+    assert signals.check_direction_guard(None, "buy").flagged is True
+    assert signals.check_direction_guard([{"open": 1.0}] * 6, "buy").flagged is True
+    assert signals.check_direction_guard(TOO_FEW_BARS, "buy").flagged is True
+
+
+def test_direction_guard_only_looks_at_the_trailing_window():
+    # an older, unrelated rally before the window must not leak into the verdict
+    older = [{"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5}] * 5
+    assert signals.check_direction_guard(older + FAILED_RALLY_BARS, "buy").flagged is True
+    assert signals.check_direction_guard(older + FAILED_RALLY_BARS, "sell").flagged is False
+
+
+def test_evaluate_signal_blocks_buy_on_the_failed_rally_with_a_direction_reason():
+    verdict = signals.evaluate_signal(FAILED_RALLY_BARS, "buy")
+    assert verdict.clear is False
+    assert any("retraced" in reason.lower() for reason in verdict.reasons)
+
+
+def test_evaluate_signal_no_longer_says_clear_for_both_sides_on_the_failed_rally():
+    buy = signals.evaluate_signal(FAILED_RALLY_BARS, "buy")
+    sell = signals.evaluate_signal(FAILED_RALLY_BARS, "sell")
+    assert not (buy.clear and sell.clear)
+    assert not any("retraced" in reason.lower() for reason in sell.reasons)
