@@ -100,7 +100,7 @@ to CronCreate at schedule time, recreated from scratch (and re-copied by
 hand from the previous version plus whatever changed) every time it was
 updated -- there has never been a standalone prompt file in this repo.
 That's why it has drifted before (see the 2026-11-10 incident in
-`odd/tasks/tradovate-execution-no-necessary.md` where a branch checkout
+`odd/tasks/archive/tradovate-execution-no-necessary.md` where a branch checkout
 under this session reverted three fixes that had already shipped). This
 section is the fix for that: it's the one place
 that should be kept current, so the next cron creation copies from here
@@ -135,7 +135,7 @@ decide; no guard, threshold, or decision rule changes)**:
   to cut per-call round-trip/orchestration overhead.
 
 1. Check current position first. As of task 1
-   (`odd/tasks/tradovate-architecture-scaling.md`), this is now also
+   (`odd/tasks/archive/tradovate-architecture-scaling.md`), this is now also
    enforced automatically in code: `executor.process_order` refuses a new
    entry whenever `position_state.read_position_state()` reports anything
    other than Flat, and `executor.run_once` auto-sends CLOSEPOSITION when
@@ -201,7 +201,7 @@ decide; no guard, threshold, or decision rule changes)**:
    `tradovate_bot/signals.py` expects (a list of dicts with `open`,
    `high`, `low`, `close` finite numbers, most recent last)** -- added
    2026-11-10 when `signals.py` was wired into `process_order`
-   (`odd/tasks/tradovate-architecture-scaling.md` task 4). **Required,
+   (`odd/tasks/archive/tradovate-architecture-scaling.md` task 4). **Required,
    not optional: `process_order` now fails closed and refuses any entry
    order with no/malformed `bars`, exactly like a missing telemetry file
    or an unreadable position log.** Omitting this field is the same class
@@ -213,7 +213,7 @@ decide; no guard, threshold, or decision rule changes)**:
    now that `run_once` claims it atomically (fixed 2026-11-11), but only
    if that service is running CURRENT code.
 7. Run it through the executor (same invocation used for prior cycles --
-   see `odd/tasks/tradovate-execution-no-necessary.md` for the exact env
+   see `odd/tasks/archive/tradovate-execution-no-necessary.md` for the exact env
    vars/script path used that session).
    **2026-11-11 incident + fix**: an independently-running NSSM service
    (`TradovateExecutor`, started long before any cron session touches
@@ -259,7 +259,7 @@ decide; no guard, threshold, or decision rule changes)**:
 10. Sanity-check the branch and that `check_trading_hours`/`signals`/
     `position_state` are actually present in the live `executor.py`/
     `risk_guard.py` before trusting the code (added after the 2026-11-10
-    branch-checkout incident in `odd/tasks/tradovate-execution-no-necessary.md`,
+    branch-checkout incident in `odd/tasks/archive/tradovate-execution-no-necessary.md`,
     where a `git checkout main` under this session silently reverted three
     already-shipped fixes). If the
     `TradovateExecutor` NSSM service (or any other always-on poller) is
@@ -275,7 +275,7 @@ decide; no guard, threshold, or decision rule changes)**:
     above) on every single cycle, routine skips included, with the full
     narrative (what happened, why, NT8 confirmation) in `signal_reason`/
     `notes`. **Never edit either doc (this one or
-    `tradovate-execution-no-necessary.md`) from an automated/cron-
+    `archive/tradovate-execution-no-necessary.md`) from an automated/cron-
     triggered cycle, for ANY event, notable included** -- changed
     2026-11-12 for routine skips only, then widened 2026-11-16 (after the
     user asked three times in one session to stop seeing an `Update(...)`
@@ -300,7 +300,7 @@ decide; no guard, threshold, or decision rule changes)**:
 ## Progress
 Moved out (2026-11-16, user request: shrink this doc for faster reads).
 The complete chronological Progress log (every cycle, incident, and pivot
-since 2026-11-09) now lives in `odd/tasks/tradovate-execution-no-necessary.md`
+since 2026-11-09) now lives in `odd/tasks/archive/tradovate-execution-no-necessary.md`
 -- moved verbatim, nothing deleted or rewritten. New notable entries
 (per Cron procedure step 11: an order placed, a position closing, a
 parameter/procedure change, a real incident, or a sanity-check failure)

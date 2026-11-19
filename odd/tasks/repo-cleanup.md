@@ -19,11 +19,18 @@ deletions on 2026-11-19 and asked to KEEP `Restart_VSC.txt`.
   `Restart_VSC.txt` (kept by request).
 
 ## Still open from the audit (not approved yet)
-Medium confidence: archive `odd/tasks/tradovate-execution-no-necessary.md`
-(228 KB), `eastern-time-migration.md`, task 3 of
-`tradovate-architecture-scaling.md`; `config.py`/`BotConfig` is unused scaffolding.
+Medium confidence: DONE 2026-11-19 (see "Archived" below); `config.py`/`BotConfig`
+is unused scaffolding.
 Tidy: hard-coded `DATA_DIR` and bare `from time_utils import` in
 `localMarketDataMCP.py` (DONE 2026-11-19: see mcp-tidy.md; absolute paths in `.mcp.json` remain),
 env defaults duplicated between `config.py` and `executor.py` (the contract roll
 needs two edits), `.gitignore` gaps (`trader/`, caches), the 2 failing
 risk_guard consistency tests, README `python3 -m pytest`.
+
+## Archived (2026-11-19)
+Moved verbatim to `odd/tasks/archive/` (nothing deleted or rewritten except path
+references): `tradovate-execution-no-necessary.md` (228 KB progress log),
+`eastern-time-migration.md` (all 7 tasks done) and
+`tradovate-architecture-scaling.md` (all 4 tasks and every acceptance criterion
+done; task 3, `BotConfig`, is implemented in `config.py`). The ~40 references in
+code comments, tests and docs now point at `odd/tasks/archive/...`.

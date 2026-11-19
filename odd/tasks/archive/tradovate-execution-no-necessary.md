@@ -766,7 +766,7 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   Added the "Cron procedure" section above (2026-11-10, user request:
   "update that cron prompt/procedure now", after `signals.py` was wired
   into `process_order` -- see
-  `odd/tasks/tradovate-architecture-scaling.md` task 4). The order JSON
+  `odd/tasks/archive/tradovate-architecture-scaling.md` task 4). The order JSON
   now requires a `bars` field; without it every order is refused. Also
   documents that position-state and signal-quality are now enforced in
   code (tasks 1/2/4), not only by the cron's own manual judgment.
@@ -2968,7 +2968,7 @@ real NT8 instance, and verifying NT8 ATI's real outgoing-file field layout.
   implementation, GREEN after; full suite run with no regressions in
   this file). Not yet wired into `executor.py` -- same staged rollout
   as `evaluate_signal` originally had (see task 4 in
-  `odd/tasks/tradovate-architecture-scaling.md`): the pure function
+  `odd/tasks/archive/tradovate-architecture-scaling.md`): the pure function
   exists and is tested, the cron procedure documents how to call it,
   wiring it into `process_order` is a separate follow-up decision.
 
