@@ -113,6 +113,30 @@ is older than the timeframe + 60 s, or when timestamps cannot be parsed
 (fail-closed). It is also true while the market is closed or NT8/the chart
 is not running -- in all cases do not trade on that data.
 
+## Price-drift gate
+
+`executor.process_order` refuses a new entry when the live price has moved
+away from the price the decision was based on (`price_drift.py`). The
+decision price is the close of the last bar in `order["bars"]`; the live
+price is the close of the newest completed 1-minute bar in
+`candles/<SYMBOL>_1m.json`. The entry is refused when
+`|live - decision| > 0.25 x stop_loss_points` (8.375 pts for the usual 33.5
+pt bracket; 8.0 pts when the order has no stop), or when the candles file is
+missing, unreadable, malformed or its newest bar is older than 150 s
+(fail-closed, same as `risk_guard` and `signals`).
+
+Why: stop and target are anchored to the actual fill, so a move between
+decision and fill silently shifts the whole bracket. On 2026-11-18 a BUY
+decided at 27459.5 filled at 27425.25 (-34.25 pts) and was stopped out two
+minutes later; replaying that cycle against the real 1m data the gate refuses
+it (21.50 pts of drift, limit 8.38). See `odd/tasks/price-drift-gate.md`.
+
+Limits: the "live" price is the last completed 1m close, so it can lag by up
+to about a minute; the gate bounds drift but does not see intra-minute moves.
+It only runs on entries. Env overrides: `PRICE_DRIFT_MAX_FRACTION`,
+`PRICE_DRIFT_MAX_POINTS`, `PRICE_DRIFT_MAX_AGE_SECONDS`. The service must be
+restarted to load changes (Python does not hot-reload).
+
 ## Required environment variables (current, ATI path)
 
 | Variable | Purpose |
