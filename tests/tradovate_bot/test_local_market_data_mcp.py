@@ -122,6 +122,27 @@ def test_unparseable_timestamps_fail_closed(tmp_path):
     assert _call()["freshness"]["stale"] is True
 
 
+def test_a_bar_stamped_in_the_future_fails_closed(tmp_path):
+    # A VPS suspended and resumed with its clock behind: NT8 keeps the real time, so its
+    # bars look "from the future" (seen 2026-11-19: age -617 s was reported as fresh).
+    _write(tmp_path, bars=_bars(last_time="2026-11-19 00:59:00"))   # ~14 min ahead of the machine clock
+    freshness = _call()["freshness"]
+    assert freshness["last_bar_age_seconds"] < 0
+    assert freshness["stale"] is True and "future" in freshness["freshness_error"]
+
+
+def test_an_export_file_stamped_in_the_future_fails_closed(tmp_path):
+    _write(tmp_path, updated="2026-11-19T05:59:00.0000000Z")        # written "after" the machine's now
+    freshness = _call()["freshness"]
+    assert freshness["stale"] is True and "future" in freshness["freshness_error"]
+
+
+def test_a_few_seconds_of_clock_skew_is_tolerated(tmp_path):
+    _write(tmp_path, bars=_bars(last_time="2026-11-19 00:45:18"), updated="2026-11-19T05:45:18.0000000Z")  # 3 s ahead
+    freshness = _call()["freshness"]
+    assert freshness["stale"] is False and "freshness_error" not in freshness
+
+
 @pytest.mark.parametrize("stamp", [
     "2026-11-19T05:45:00.1293119Z",        # NT8 DateTime.UtcNow:O (7 digits)
     "2026-11-19T05:45:00.129311Z",         # 6 digits

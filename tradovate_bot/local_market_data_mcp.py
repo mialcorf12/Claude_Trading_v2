@@ -55,6 +55,10 @@ def _normalize_timeframe(tf: str) -> str:
 # means the exporter (or NT8) stopped. Also expected when the market is closed.
 STALE_GRACE_SECONDS = 60
 _TF_SECONDS = {"1m": 60, "5m": 300}
+# A bar or export stamped ahead of the machine clock means the clocks disagree (e.g. a
+# suspended VPS resumed with its clock behind while NT8 kept the real time). A few seconds
+# of skew is normal; more than this is reported as stale instead of a negative "age".
+FUTURE_TOLERANCE_SECONDS = 5
 
 _UTC_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})?$")
 
@@ -94,12 +98,17 @@ def _freshness(payload: dict, tf: str) -> dict:
         last_age = (now - last.replace(tzinfo=EASTERN)).total_seconds()
         file_age = (_now_utc() - _parse_utc(payload["updated_utc"])).total_seconds()
         limit = _TF_SECONDS.get(tf, 300) + STALE_GRACE_SECONDS
+        in_future = last_age < -FUTURE_TOLERANCE_SECONDS or file_age < -FUTURE_TOLERANCE_SECONDS
         info.update({
             "last_bar_time_et": last.strftime("%Y-%m-%d %H:%M:%S"),
             "last_bar_age_seconds": round(last_age),
             "file_age_seconds": round(file_age),
-            "stale": last_age > limit or file_age > limit,
+            "stale": in_future or last_age > limit or file_age > limit,
         })
+        if in_future:
+            info["freshness_error"] = (
+                "timestamps in the future of the machine clock (bar %+ds, file %+ds): "
+                "clock skew or mixed data, do not trade" % (round(last_age), round(file_age)))
     except Exception as e:
         info.update({"stale": True, "freshness_error": str(e)})
     return info

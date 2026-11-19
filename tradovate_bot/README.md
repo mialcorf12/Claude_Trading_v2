@@ -109,8 +109,10 @@ Everything stays in ET; no conversion is done.
 Freshness is checked by the MCP, not the caller: the response carries
 `freshness` = `{now_et, last_bar_time_et, last_bar_age_seconds,
 file_age_seconds, stale}`. `stale` is true when the newest bar or the file
-is older than the timeframe + 60 s, or when timestamps cannot be parsed
-(fail-closed). It is also true while the market is closed or NT8/the chart
+is older than the timeframe + 60 s, when timestamps cannot be parsed
+(fail-closed), or when the bar or file is stamped more than 5 s *ahead* of
+the machine clock (negative age: clock skew, e.g. a suspended VPS that
+resumed with its clock behind; `freshness_error` says so). It is also true while the market is closed or NT8/the chart
 is not running -- in all cases do not trade on that data.
 
 ## Price-drift gate
