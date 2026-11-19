@@ -114,7 +114,9 @@ risk_guard/signals rejection -- never route around it.
 
 **11 (haiku):** log every cycle, skips included, with `executor.log_cycle` in
 one python call (state outcome, signal_reason and notes explicitly in the
-delegation). If a position opened by a previous cycle has since closed
+delegation), then run `python -m tradovate_bot.replay --archive` in the same Bash
+call so the candle history for offline replays keeps growing (it is idempotent
+and prints only a one-line count). If a position opened by a previous cycle has since closed
 (stop/target), say so in the notes with entry, exit and P&L from the NT8 log.
 
 **12:** nothing to clean unless a one-shot order file was written outside

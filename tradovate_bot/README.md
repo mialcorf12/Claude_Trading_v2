@@ -152,6 +152,28 @@ restarted to load changes (Python does not hot-reload).
   "last bars moved more than k x the average range" rules removed winners and
   are not used.
 
+## Offline replay (`tradovate_bot/replay.py`)
+
+Rules here are accepted or rejected by replaying exported 5-minute candles, not
+by intuition (direction guard, late-bounce check, fill-slippage limit, and the
+rejected structural stop: `odd/tasks/*.md`). The harness simulates every trade
+the guards would allow (entry at the next bar's open, stop = target from
+`select_bracket_points`, stop first on a same-bar touch, $ for 3 MNQ contracts,
+no costs) and reports each guard's effect on its own:
+
+    python -m tradovate_bot.replay                # guard ablation on the history
+    python -m tradovate_bot.replay --archive      # merge candles/MNQ_5m.json into the history
+    python -m tradovate_bot.replay --allow-gaps   # also use windows that cross a market closure
+
+Read it as: a guard whose REMOVED trades net negative is earning its keep; one
+whose removed trades net positive is removing winners. `candles/MNQ_5m.json`
+only keeps the last 200 bars (~16 h), so `--archive` (run on every cycle, see
+`CYCLE_PROMPT.md` step 11) grows `candles/archive/MNQ_5m_history.json`. Caveats:
+simulated fills, overlapping windows (trades are not independent), no costs and
+few sessions -- it can reject a rule, it cannot prove one. The 2026-11-18
+session alone (200 bars): no guards -> -$4623 over 316 trades; each guard removes
+mostly losers; all guards together -> +$302 over 66 trades.
+
 ## Required environment variables (current, ATI path)
 
 | Variable | Purpose |
