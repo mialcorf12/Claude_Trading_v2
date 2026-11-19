@@ -23,7 +23,7 @@ Medium confidence: archive `odd/tasks/tradovate-execution-no-necessary.md`
 (228 KB), `eastern-time-migration.md`, task 3 of
 `tradovate-architecture-scaling.md`; `config.py`/`BotConfig` is unused scaffolding.
 Tidy: hard-coded `DATA_DIR` and bare `from time_utils import` in
-`localMarketDataMCP.py` (also camelCase name), absolute paths in `.mcp.json`,
+`localMarketDataMCP.py` (DONE 2026-11-19: see mcp-tidy.md; absolute paths in `.mcp.json` remain),
 env defaults duplicated between `config.py` and `executor.py` (the contract roll
 needs two edits), `.gitignore` gaps (`trader/`, caches), the 2 failing
 risk_guard consistency tests, README `python3 -m pytest`.

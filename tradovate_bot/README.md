@@ -97,7 +97,7 @@ TradingView and Yahoo are no longer used.
   NinjaScript Editor (F5), then add it to the **1-minute** chart of MNQ (or
   NQ) and keep that chart open. Files are UTF-8 **with BOM**.
 - `candles/` -- output folder for those JSON files (runtime data).
-- `tradovate_bot/localMarketDataMCP.py` -- MCP server exposing
+- `tradovate_bot/local_market_data_mcp.py` -- MCP server exposing
   `get_local_candles(symbol="MNQ", timeframe="5m", limit=10)`. Falls back
   between MNQ and NQ if only one file exists.
 - `.mcp.json` (repo root) -- registers it as `local-market-data`, scoped to
