@@ -11,3 +11,10 @@ venv/
 tradovate_bot/state/
 .DS_Store
 Thumbs.db
+
+# Runtime / local state (never tracked)
+trader/
+*.log
+*.jsonl
+.mypy_cache/
+.ruff_cache/
