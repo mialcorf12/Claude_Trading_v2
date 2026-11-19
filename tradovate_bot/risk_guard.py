@@ -143,7 +143,7 @@ def check_position_size(symbol, qty, allowed_symbol=None, max_contracts=None):
     """MNQ only, hard cap of 3 contracts. Rejects anything else outright.
 
     allowed_symbol/max_contracts are optional overrides (see
-    odd/tasks/tradovate-architecture-scaling.md task 3): when omitted or
+    odd/tasks/archive/tradovate-architecture-scaling.md task 3): when omitted or
     None, this falls back to the module-level ALLOWED_SYMBOL/MAX_CONTRACTS
     exactly as before -- purely additive, no change to the no-argument
     call shape every existing caller/test already uses."""
@@ -178,7 +178,7 @@ def evaluate_order(order, account_state, now, config=None):
     contract.
 
     `config` is an optional explicit identity/transport bundle (see
-    tradovate_bot/config.py and odd/tasks/tradovate-architecture-scaling.md
+    tradovate_bot/config.py and odd/tasks/archive/tradovate-architecture-scaling.md
     task 3): when given, its `.allowed_symbol`/`.max_contracts` (read via
     getattr, so this module stays duck-typed and never imports config.py --
     see check_position_size's call below) override the module-level

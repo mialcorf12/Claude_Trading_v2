@@ -48,7 +48,7 @@ NT8_ACCOUNT_ID = os.environ.get("NT8_ACCOUNT_ID", "")
 # ATI incoming/outgoing folders above -- see position_state.py. Used to
 # read the account's current market position for the one-position-at-a-
 # time and auto-flatten-on-close safeguards (see
-# odd/tasks/tradovate-architecture-scaling.md task 1).
+# odd/tasks/archive/tradovate-architecture-scaling.md task 1).
 NT8_LOG_DIR = os.environ.get("NT8_LOG_DIR", "")
 
 # Path to the JSON telemetry file written by the read-only NinjaScript
@@ -227,7 +227,7 @@ def fetch_account_state(config=None):
     telemetry_max_staleness_seconds instead of the module-level
     ACCOUNT_TELEMETRY_JSON_PATH/ACCOUNT_TELEMETRY_MAX_STALENESS_SECONDS for
     this call only; None (the default) changes nothing (see
-    odd/tasks/tradovate-architecture-scaling.md task 3)."""
+    odd/tasks/archive/tradovate-architecture-scaling.md task 3)."""
     telemetry_path = config.telemetry_json_path if config is not None else ACCOUNT_TELEMETRY_JSON_PATH
     max_staleness = (
         config.telemetry_max_staleness_seconds
@@ -282,7 +282,7 @@ def build_place_command(order, account=None, config=None):
 
     `config` is an optional explicit identity/transport bundle (see
     tradovate_bot/config.py and
-    odd/tasks/tradovate-architecture-scaling.md task 3): when given, its
+    odd/tasks/archive/tradovate-architecture-scaling.md task 3): when given, its
     fields take precedence over the module globals for this call, except
     an explicitly passed `account` still wins over config.account_id --
     `account` is the already-existing, more specific override. When
@@ -320,7 +320,7 @@ def build_bracket_exit_commands(order, stop_price, target_price, account=None, c
     `config` behaves exactly as in build_place_command: optional, its
     fields override the module globals for this call, an explicit
     `account` still wins over config.account_id, and None changes nothing
-    (see odd/tasks/tradovate-architecture-scaling.md task 3)."""
+    (see odd/tasks/archive/tradovate-architecture-scaling.md task 3)."""
     if account is None:
         account = config.account_id if config is not None else NT8_ACCOUNT_ID
     instrument = config.instrument if config is not None else NT8_INSTRUMENT
@@ -401,7 +401,7 @@ def wait_for_entry_fill(seen_files, timeout_seconds=None, poll_interval_seconds=
     -- only for whichever of timeout_seconds/poll_interval_seconds was left
     None, same precedence as every other config-aware function here. None
     (the default) changes nothing (see
-    odd/tasks/tradovate-architecture-scaling.md task 3)."""
+    odd/tasks/archive/tradovate-architecture-scaling.md task 3)."""
     if timeout_seconds is None:
         timeout_seconds = config.fill_timeout_seconds if config is not None else FILL_CONFIRMATION_TIMEOUT_SECONDS
     if poll_interval_seconds is None:
@@ -450,7 +450,7 @@ def current_position(config=None):
 
     `config`, when given, supplies log_dir/account_id instead of the
     module globals for this call only; None (the default) changes nothing
-    (see odd/tasks/tradovate-architecture-scaling.md task 3)."""
+    (see odd/tasks/archive/tradovate-architecture-scaling.md task 3)."""
     log_dir = config.log_dir if config is not None else NT8_LOG_DIR
     account_id = config.account_id if config is not None else NT8_ACCOUNT_ID
     return position_state.read_position_state(log_dir, account_id)
@@ -483,7 +483,7 @@ def process_order(raw_order, config=None):
     whenever `clear` isn't True. This formalizes the pullback-over-chase
     and repeated-reversal-is-chop rules in code instead of leaving them as
     prose the cron prompt has to re-derive every cycle. See
-    odd/tasks/tradovate-architecture-scaling.md task 4.
+    odd/tasks/archive/tradovate-architecture-scaling.md task 4.
 
     After the signals guard passes, the price-drift gate (price_drift.py)
     refuses the entry if the live 1-minute price has moved away from the
@@ -506,14 +506,14 @@ def process_order(raw_order, config=None):
     Long/Short, or "unknown" because the log couldn't be read) the entry
     is refused -- this bot is single-order/single-position by design, so
     any non-Flat read means a new entry must not be placed. See
-    odd/tasks/tradovate-architecture-scaling.md task 1.
+    odd/tasks/archive/tradovate-architecture-scaling.md task 1.
 
     `config` is an optional explicit identity/transport bundle, threaded
     through to every call below that accepts one (fetch_account_state,
     risk_guard.evaluate_order, current_position, build_place_command,
     wait_for_entry_fill, build_bracket_exit_commands). `config=None` (the
     default, or simply omitting it) reads every module global exactly as
-    before -- see odd/tasks/tradovate-architecture-scaling.md task 3.
+    before -- see odd/tasks/archive/tradovate-architecture-scaling.md task 3.
     current_position is only ever called with the config kwarg when a
     config was actually given, so a caller that monkeypatches
     current_position with a plain zero-argument stub (as every pre-
@@ -646,7 +646,7 @@ def run_once(orders_path=DEFAULT_ORDERS_PATH, config=None):
     wait_for_entry_fill's timeout path already uses in process_order) and
     skips normal order processing for this cycle -- the mandatory
     16:00-18:00 ET flatten no longer depends on the cron prompt's manual
-    step (see odd/tasks/tradovate-architecture-scaling.md task 1). If the
+    step (see odd/tasks/archive/tradovate-architecture-scaling.md task 1). If the
     market is closed and the position is Flat, there's nothing to flatten
     and no new entries are possible anyway (risk_guard would reject them),
     so order processing is simply skipped for the cycle. Returns the list
@@ -656,7 +656,7 @@ def run_once(orders_path=DEFAULT_ORDERS_PATH, config=None):
     `config`, when given, is threaded through to current_position and
     every process_order call this cycle makes; None (the default) reads
     every module global exactly as before (see
-    odd/tasks/tradovate-architecture-scaling.md task 3). Like
+    odd/tasks/archive/tradovate-architecture-scaling.md task 3). Like
     process_order, current_position is only called with the config kwarg
     when a config was actually given, so existing zero-argument
     monkeypatch stubs of current_position keep working unchanged."""
@@ -708,7 +708,7 @@ def poll_outgoing_once(seen_files, config=None):
 
     `config`, when given, supplies outgoing_dir instead of the module-level
     NT8_OUTGOING_DIR for this call only; None (the default) changes
-    nothing (see odd/tasks/tradovate-architecture-scaling.md task 3)."""
+    nothing (see odd/tasks/archive/tradovate-architecture-scaling.md task 3)."""
     outgoing_dir = config.outgoing_dir if config is not None else NT8_OUTGOING_DIR
     records, updated_seen = oif_writer.tail_outgoing(outgoing_dir, seen_files)
     for record in records:
@@ -726,7 +726,7 @@ def main(config=None):
     working exactly as before when called with no arguments) reads
     NT8_INCOMING_DIR/NT8_ACCOUNT_ID/NT8_OUTGOING_DIR/
     ACCOUNT_TELEMETRY_JSON_PATH exactly as before. See
-    odd/tasks/tradovate-architecture-scaling.md task 3."""
+    odd/tasks/archive/tradovate-architecture-scaling.md task 3."""
     _ensure_state_dir()
     incoming_dir = config.incoming_dir if config is not None else NT8_INCOMING_DIR
     account_id = config.account_id if config is not None else NT8_ACCOUNT_ID

@@ -140,7 +140,7 @@ Configurar las variables a nivel de máquina (`Machine`) para garantizar la pers
 
 ```
 
-> **`NT8_LOG_DIR`** (agregada 2026-11-10, ver `odd/tasks/tradovate-architecture-scaling.md` tarea 1): carpeta del log diagnóstico propio de NT8 (`*.en.txt`), **distinta** de `NT8_OUTGOING_DIR`. `tradovate_bot/position_state.py` la usa para el guard de una-posición-a-la-vez y el cierre automático al cerrar el mercado. **Sin esta variable, `current_position()` siempre devuelve `"unknown"` y el bot rechaza toda orden nueva** (fail-closed) — es obligatoria, no opcional, para que el bot vuelva a operar.
+> **`NT8_LOG_DIR`** (agregada 2026-11-10, ver `odd/tasks/archive/tradovate-architecture-scaling.md` tarea 1): carpeta del log diagnóstico propio de NT8 (`*.en.txt`), **distinta** de `NT8_OUTGOING_DIR`. `tradovate_bot/position_state.py` la usa para el guard de una-posición-a-la-vez y el cierre automático al cerrar el mercado. **Sin esta variable, `current_position()` siempre devuelve `"unknown"` y el bot rechaza toda orden nueva** (fail-closed) — es obligatoria, no opcional, para que el bot vuelva a operar.
 
 > **Importante:** Cerrar la consola actual y abrir una nueva ventana de PowerShell para que la sesión cargue las nuevas variables de entorno a nivel de sistema.
 

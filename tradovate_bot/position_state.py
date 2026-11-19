@@ -2,7 +2,7 @@
 position on a given account, so one-position-at-a-time and auto-flatten-
 on-close can be real, tested Python code instead of relying on an LLM
 grepping this same log by hand every cron cycle (see
-odd/tasks/tradovate-architecture-scaling.md task 1).
+odd/tasks/archive/tradovate-architecture-scaling.md task 1).
 
 This is NOT the ATI "outgoing" folder oif_writer.py tails -- it is NT8's
 own windowed diagnostic log, written under
@@ -69,7 +69,7 @@ def parse_position_state(log_text, account):
             # position -- only the net-position line NT8 writes alongside
             # each leg (recognizable by "Average price=", no "Execution=")
             # is authoritative. Verified against a real live NT8 log,
-            # 2026-11-10 (see odd/tasks/tradovate-architecture-scaling.md).
+            # 2026-11-10 (see odd/tasks/archive/tradovate-architecture-scaling.md).
             continue
         account_match = _ACCOUNT_RE.search(line)
         if not account_match or account_match.group(1) != account:

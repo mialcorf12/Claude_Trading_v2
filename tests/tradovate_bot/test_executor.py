@@ -21,7 +21,7 @@ from tradovate_bot import executor, position_state, price_drift, time_utils
 WITHIN_HOURS = datetime(2026, 11, 11, 10, 0, tzinfo=time_utils.EASTERN)
 
 # ---------------------------------------------------------------- signals.py bars fixtures
-# (odd/tasks/tradovate-architecture-scaling.md task 4: process_order now
+# (odd/tasks/archive/tradovate-architecture-scaling.md task 4: process_order now
 # runs signals.evaluate_signal(order["bars"], order["side"]) before the
 # one-position-at-a-time check, so every pre-existing test whose raw_order
 # needs to reach that check or anything after it needs a `bars` list that
@@ -214,7 +214,7 @@ def test_process_order_places_order_when_all_checks_pass(isolated_state, monkeyp
 
 
 # ---------------------------------------------------------------- signals.py guard wiring
-# (odd/tasks/tradovate-architecture-scaling.md task 4)
+# (odd/tasks/archive/tradovate-architecture-scaling.md task 4)
 
 def test_process_order_refuses_entry_with_no_bars(isolated_state, monkeypatch):
     _write_telemetry(isolated_state, monkeypatch)
@@ -971,7 +971,7 @@ def test_run_once_processes_orders_normally_when_within_hours(isolated_state, mo
 
 
 # ---------------------------------------------------------------- optional explicit BotConfig
-# (odd/tasks/tradovate-architecture-scaling.md task 3: purely additive --
+# (odd/tasks/archive/tradovate-architecture-scaling.md task 3: purely additive --
 # every test above calls with no config argument at all and must keep
 # behaving exactly as it always has, reading the same module globals the
 # isolated_state fixture monkeypatches.)

@@ -7,7 +7,7 @@ Why this exists: `executor.py` and `risk_guard.py` read these values as
 module-level globals (mostly `os.environ.get(...)` at import time), so
 running a second account or instrument today means a second *process*
 with different env vars, not a parameterized call -- see
-odd/tasks/tradovate-architecture-scaling.md task 3. `BotConfig` lets a
+odd/tasks/archive/tradovate-architecture-scaling.md task 3. `BotConfig` lets a
 caller pass an explicit identity/transport bundle into `risk_guard.
 evaluate_order`/`executor.*` instead, so two configs could eventually run
 side by side in the same process/tests without monkeypatching module

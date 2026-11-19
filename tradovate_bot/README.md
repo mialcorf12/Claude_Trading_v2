@@ -290,7 +290,7 @@ decision = executor.process_order(order, config=cfg)
 `BotConfig.from_env()` reads the exact same env vars/defaults `executor.py`
 reads at import time, so it's a drop-in stand-in for "the bot's current
 configuration." This is purely additive (see
-odd/tasks/tradovate-architecture-scaling.md task 3): every function in
+odd/tasks/archive/tradovate-architecture-scaling.md task 3): every function in
 `executor.py`/`risk_guard.py` keeps an optional `config=None` parameter
 that, when omitted, reads the module-level globals exactly as before --
 nothing here requires passing a config, and running a second

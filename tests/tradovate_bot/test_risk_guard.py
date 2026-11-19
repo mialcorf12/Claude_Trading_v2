@@ -339,7 +339,7 @@ def test_check_trading_hours_function_directly():
 
 
 # ---------------------------------------------------------------- optional explicit config
-# (odd/tasks/tradovate-architecture-scaling.md task 3: check_position_size's
+# (odd/tasks/archive/tradovate-architecture-scaling.md task 3: check_position_size's
 # allowed_symbol/max_contracts and evaluate_order's config are purely
 # additive -- every test above calls with no config/overrides at all and
 # must keep behaving exactly as it always has.)

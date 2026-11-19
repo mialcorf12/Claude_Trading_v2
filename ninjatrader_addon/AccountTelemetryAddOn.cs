@@ -235,7 +235,7 @@ namespace NinjaTrader.NinjaScript.AddOns
         // converting a known UTC instant (DateTimeOffset.UtcNow) rather than
         // constructing local time from scratch, so DST transition days are
         // not ambiguous. This 17:00-ET boundary is an explicit user
-        // decision (odd/tasks/eastern-time-migration.md, T4) -- do not
+        // decision (odd/tasks/archive/eastern-time-migration.md, T4) -- do not
         // change it to 18:00 without the user re-confirming that decision;
         // a 2026-11-10 report of `daily_realized_pnl` disagreeing with NT8
         // ($-549 vs $-200.50) turned out to be a separate problem, caught by

@@ -3,7 +3,7 @@
 These exercise the pure log-line parser (parse_position_state) and the
 thin file-finding wrapper (read_position_state) against synthetic NT8
 diagnostic-log text -- never a real NT8 instance. See
-odd/tasks/tradovate-architecture-scaling.md task 1 for why this exists:
+odd/tasks/archive/tradovate-architecture-scaling.md task 1 for why this exists:
 one-position-at-a-time and auto-flatten-on-close were previously enforced
 only by an LLM grepping NT8's own log file each cycle in the cron prompt.
 """

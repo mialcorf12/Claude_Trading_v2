@@ -2,7 +2,7 @@
 
 BotConfig.from_env() must reproduce the exact same env vars and defaults
 executor.py reads at import time (see executor.py's module-level globals
-and odd/tasks/tradovate-architecture-scaling.md task 3), so it's a drop-in
+and odd/tasks/archive/tradovate-architecture-scaling.md task 3), so it's a drop-in
 stand-in for "the bot's current real configuration" wherever a caller
 wants to start threading an explicit config through instead of relying on
 executor.py's/risk_guard.py's module globals.

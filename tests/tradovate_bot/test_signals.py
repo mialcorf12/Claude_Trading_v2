@@ -3,7 +3,7 @@
 Codifies two decision-quality rules established LIVE this session, after
 root-causing two real losing trades (see
 odd/tasks/tradovate-execution-bot.md, cycles 18-23, and
-odd/tasks/tradovate-architecture-scaling.md task 2):
+odd/tasks/archive/tradovate-architecture-scaling.md task 2):
 
 1. pullback-over-chase: prefer an entry on a confirmed pullback over
    chasing an already-extended move with zero retracement. Cycle 18's BUY

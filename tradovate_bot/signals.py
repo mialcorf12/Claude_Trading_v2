@@ -1,7 +1,7 @@
 """Pure, deterministic signal guardrails for the Tradovate execution bot.
 
 No I/O, no network calls, no LLM calls -- same constraint as risk_guard.py
-and position_state.py (see odd/tasks/tradovate-architecture-scaling.md
+and position_state.py (see odd/tasks/archive/tradovate-architecture-scaling.md
 task 2's "no LLM call anywhere" constraint). Every function here is a
 plain function of a list of OHLCV bars so it can be unit tested with
 synthetic fixtures and reasoned about with certainty, instead of being
@@ -30,7 +30,7 @@ These guards do NOT replace the broader discretionary read (volume, news,
 overall trend) -- they only formalize these two specific, previously
 prose-only rules so they are testable and can't silently drift between
 cron cycles. This is now wired into tradovate_bot.executor.process_order
-(see odd/tasks/tradovate-architecture-scaling.md task 4): every entry
+(see odd/tasks/archive/tradovate-architecture-scaling.md task 4): every entry
 order's decision flow runs evaluate_signal before placing an order.
 
 Bar shape: each bar is a plain dict with at least `open`, `high`, `low`,
